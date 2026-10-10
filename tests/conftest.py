@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Generator
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import struct
+from typing import Any
+from unittest.mock import patch
 
 from modbus_connection.mock import MockModbusConnection, MockModbusUnit
 import pytest
+
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.apsystems_modbus.const import (
+    CONF_INVERTERS,
+    CONF_MODEL,
+    CONF_SERIAL_NUMBER,
+    CONF_UNIT_ID,
+    DOMAIN,
+)
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
@@ -43,21 +57,6 @@ def mock_ecu(mock_modbus_connection: MockModbusConnection) -> MockModbusConnecti
         seed_unit(mock_modbus_connection.for_unit(int(unit_id)), registers)
     return mock_modbus_connection
 
-
-from collections.abc import AsyncIterator, Generator  # noqa: E402
-from contextlib import asynccontextmanager  # noqa: E402
-from typing import Any  # noqa: E402
-from unittest.mock import patch  # noqa: E402
-
-from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: E402
-
-from custom_components.apsystems_modbus.const import (  # noqa: E402
-    CONF_INVERTERS,
-    CONF_MODEL,
-    CONF_SERIAL_NUMBER,
-    CONF_UNIT_ID,
-    DOMAIN,
-)
 
 INVERTERS = [
     {

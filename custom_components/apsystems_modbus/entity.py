@@ -7,16 +7,9 @@ from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, Device
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    CONF_ECU_ID,
-    CONF_MODEL,
-    CONF_SERIAL_NUMBER,
-    CONF_UNIT_ID,
-    DOMAIN,
-    MANUFACTURER,
-)
+from .const import CONF_ECU_ID, DOMAIN, InverterConfig
 from .coordinator import ApsystemsConfigEntry, EcuCoordinator
-from .ecu import Inverter
+from .ecu import MANUFACTURER, Inverter
 
 ECU_R_ID_PREFIX = "2160"
 
@@ -41,16 +34,14 @@ def ecu_device_info(entry: ApsystemsConfigEntry) -> DeviceInfo:
     return info
 
 
-def inverter_device_info(
-    item: dict[str, object], ecu_device_id: str | None
-) -> DeviceInfo:
+def inverter_device_info(item: InverterConfig, ecu_device_id: str | None) -> DeviceInfo:
     """Describe one inverter from what the config flow read out of model 1."""
-    serial = str(item[CONF_SERIAL_NUMBER])
+    serial = item["serial_number"]
     info = DeviceInfo(
         identifiers={(DOMAIN, serial)},
         name=f"Inverter {serial}",
         manufacturer=MANUFACTURER,
-        model=str(item[CONF_MODEL]) or None,
+        model=item["model"] or None,
         serial_number=serial,
     )
     if ecu_device_id:
@@ -89,15 +80,15 @@ class InverterEntity(CoordinatorEntity[EcuCoordinator]):
     def __init__(
         self,
         coordinator: EcuCoordinator,
-        item: dict[str, object],
+        item: InverterConfig,
         description: EntityDescription,
     ) -> None:
         """Attach to the inverter configured as ``item``."""
         super().__init__(coordinator)
         self.entity_description = description
-        self.unit_id = int(str(item[CONF_UNIT_ID]))
-        serial = str(item[CONF_SERIAL_NUMBER])
-        self._attr_unique_id = f"{serial}-{description.key}"
+        self.unit_id = item["unit_id"]
+        self.serial = item["serial_number"]
+        self._attr_unique_id = f"{self.serial}-{description.key}"
         self._attr_device_info = inverter_device_info(item, coordinator.ecu_device_id)
 
     @property

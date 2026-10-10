@@ -56,9 +56,7 @@ rules:
   docs-supported-devices: done
   docs-supported-functions: done
   docs-troubleshooting: done
-  docs-use-cases:
-    status: todo
-    comment: Follows with the Energy dashboard section in 0.2.
+  docs-use-cases: done
   dynamic-devices:
     status: exempt
     comment: Inverters are fixed by the addresses set in EMA Manager; change them via reconfigure.
@@ -70,8 +68,8 @@ rules:
   icon-translations: done
   reconfiguration-flow: done
   repair-issues:
-    status: exempt
-    comment: Problems are reported through entity availability and the log.
+    status: todo
+    comment: A changed inverter on a known address is only logged; a repair issue would guide the user to reconfigure.
   stale-devices: done
 
   # Platinum

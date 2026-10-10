@@ -22,9 +22,11 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_BACKOFF,
+    MAX_INVERTER_POWER,
     MAX_TIMEOUTS_PER_CYCLE,
 )
-from .ecu import Inverter, UnsupportedLayoutError
+from .ecu import Inverter
+from .lifetime import EnergyLedger
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +42,7 @@ class EcuData:
     power: float = 0.0
     """Sum of the AC power of the available inverters, in W."""
     energy_today: float | None = None
-    """Sum of the daily counters in Wh; a missing inverter counts as last read."""
+    """Sum of the accepted daily counters in Wh."""
     online: int = 0
     """Inverters that are feeding in."""
     last_change: datetime | None = None
@@ -64,8 +66,14 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         hass: HomeAssistant,
         entry: ApsystemsConfigEntry,
         inverters: dict[int, Inverter],
+        lead: Inverter,
+        ledger: EnergyLedger,
     ) -> None:
-        """Set up polling for the given inverters, keyed by unit id."""
+        """Set up polling for the given inverters, keyed by unit id.
+
+        ``lead`` is the inverter whose layout was checked at setup; the
+        ECU-wide values such as the grid connection are read from it.
+        """
         self._base_interval = timedelta(
             seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         )
@@ -77,26 +85,27 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             update_interval=self._base_interval,
         )
         self.inverters = inverters
-        self.lead = inverters[min(inverters)]
+        self.ledger = ledger
+        self.lead = lead
         self.write_lock = asyncio.Lock()
         self.ecu_device_id: str | None = None
         """Device registry id of the ECU, set once the device is registered."""
-        self._expected_serials = {
+        self.serials: dict[int, str] = {
             item[CONF_UNIT_ID]: item[CONF_SERIAL_NUMBER]
             for item in entry.data[CONF_INVERTERS]
         }
+        """Configured serial number per unit id."""
+        self._timeout_budget = min(MAX_TIMEOUTS_PER_CYCLE, len(inverters))
         self._degraded = False
         self._reported: set[int] = set()
         self._snapshot: dict[int, tuple[float | None, float | None]] = {}
         self._last_change: datetime | None = None
-        self._last_energy: dict[int, float] = {}
-        """Last daily counter per inverter, kept while an inverter is missing."""
 
     async def _async_update_data(self) -> EcuData:
         data = EcuData()
         timeouts = 0
         for unit_id, inverter in sorted(self.inverters.items()):
-            if timeouts >= MAX_TIMEOUTS_PER_CYCLE:
+            if timeouts >= self._timeout_budget:
                 break
             async with self.write_lock:
                 try:
@@ -108,9 +117,6 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                     ) from err
                 except ModbusTimeoutError:
                     timeouts += 1
-                    continue
-                except UnsupportedLayoutError as err:
-                    self._report_once(unit_id, "unsupported register layout: %s", err)
                     continue
                 except ModbusError as err:
                     _LOGGER.debug("Unit %s: poll failed: %s", unit_id, err)
@@ -132,33 +138,32 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
 
     def _serial_matches(self, unit_id: int, inverter: Inverter) -> bool:
         """Guard against a different inverter being moved to a known address."""
-        expected = self._expected_serials.get(unit_id)
+        expected = self.serials[unit_id]
         actual = inverter.status.serial_number
         # Unknown when the status read failed this cycle; nothing to compare.
-        if expected is None or actual is None or actual == expected:
+        if actual is None or actual == expected:
             return True
-        self._report_once(
-            unit_id,
-            "serial number %s does not match the configured %s; "
-            "reconfigure the integration",
-            actual,
-            expected,
-        )
+        if unit_id not in self._reported:
+            self._reported.add(unit_id)
+            _LOGGER.warning(
+                "Unit %s: serial number %s does not match the configured %s; "
+                "reconfigure the integration",
+                unit_id,
+                actual,
+                expected,
+            )
         return False
-
-    def _report_once(self, unit_id: int, message: str, *args: object) -> None:
-        """Log a problem with one inverter a single time, not every poll."""
-        if unit_id in self._reported:
-            return
-        self._reported.add(unit_id)
-        _LOGGER.warning("Unit %s: %s", unit_id, message % args)
 
     async def _pace(self, timeouts: int) -> None:
         """Back off while the ECU is struggling, recover when it answers again."""
-        if timeouts >= MAX_TIMEOUTS_PER_CYCLE:
-            await self.lead.modbus_unit.disconnect()
+        if timeouts >= self._timeout_budget:
             current = self.update_interval or self._base_interval
             self.update_interval = min(current * 2, MAX_BACKOFF)
+            try:
+                # A link that stopped answering is opened fresh next time.
+                await self.lead.modbus_unit.disconnect()
+            except ModbusError as err:
+                _LOGGER.debug("Closing the link failed: %s", err)
             if not self._degraded:
                 self._degraded = True
                 _LOGGER.warning(
@@ -180,18 +185,26 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         for unit_id in data.available:
             measurements = self.inverters[unit_id].measurements
             power = measurements.ac_power or 0.0
-            data.power += power
+            # A bad reading would otherwise end up in the stored peak power.
+            if 0 <= power <= MAX_INVERTER_POWER:
+                data.power += power
             if measurements.is_online:
                 data.online += 1
             if measurements.energy_today is not None:
-                self._last_energy[unit_id] = measurements.energy_today
+                self.ledger.record_daily(
+                    self.serials[unit_id], measurements.energy_today
+                )
             snapshot[unit_id] = (measurements.energy_today, measurements.ac_power)
 
-        # An inverter that did not answer counts with its last known counter, so
-        # the total neither dips nor freezes while one inverter is missing.
-        data.energy_today = (
-            sum(self._last_energy.values()) if self._last_energy else None
-        )
+        # Daily counters as accepted by the ledger: stray readings are held back,
+        # and an inverter that did not answer counts with its last value.
+        counters = [self.ledger.today_of(serial) for serial in self.serials.values()]
+        known = [value for value in counters if value is not None]
+        data.energy_today = sum(known) if known else None
+
+        self.ledger.record_power(data.power)
+        self.ledger.finish_poll(complete=len(data.available) == len(self.inverters))
+        self.ledger.schedule_save()
 
         changed = any(
             self._snapshot.get(unit) != value for unit, value in snapshot.items()

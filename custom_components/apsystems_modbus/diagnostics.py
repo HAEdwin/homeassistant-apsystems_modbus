@@ -12,7 +12,7 @@ from .const import CONF_ECU_ID, CONF_SERIAL_NUMBER
 from .coordinator import ApsystemsConfigEntry
 from .ecu import Inverter
 
-TO_REDACT = {CONF_HOST, CONF_MAC, CONF_ECU_ID, CONF_SERIAL_NUMBER, "serial_number"}
+TO_REDACT = {CONF_HOST, CONF_MAC, CONF_ECU_ID, CONF_SERIAL_NUMBER}
 
 
 def _component_values(inverter: Inverter) -> dict[str, Any]:
@@ -33,7 +33,7 @@ async def async_get_config_entry_diagnostics(
     data = coordinator.data
     return {
         "entry": {
-            "title": entry.title,
+            # The title can hold the ECU id, so it is left out.
             "data": async_redact_data(dict(entry.data), TO_REDACT),
             "options": dict(entry.options),
         },
@@ -47,6 +47,10 @@ async def async_get_config_entry_diagnostics(
             "last_change": data.last_change.isoformat()
             if data and data.last_change
             else None,
+        },
+        "lifetime": {
+            "lifetime_energy_wh": coordinator.ledger.lifetime,
+            "peak_power_w": coordinator.ledger.peak_power,
         },
         "inverters": {
             str(unit_id): async_redact_data(_component_values(inverter), TO_REDACT)

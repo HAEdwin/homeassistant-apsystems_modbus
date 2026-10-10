@@ -38,7 +38,7 @@ async def test_ecu_totals(
     assert energy is not None
     assert float(energy.state) == pytest.approx(1.096, abs=0.001)
     assert energy.attributes["unit_of_measurement"] == "kWh"
-    assert energy.attributes["state_class"] == "total"
+    assert "state_class" not in energy.attributes
 
     online = hass.states.get("sensor.apsystems_ecu_inverters_online")
     assert online is not None
@@ -182,3 +182,52 @@ async def test_removed_inverter_device_is_cleaned_up(
     assert registry.async_get_device_by_identifier(
         (DOMAIN, "704000000001"), mock_config_entry.entry_id
     )
+
+
+async def test_lifetime_and_peak_sensors(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+
+    lifetime = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
+    assert lifetime is not None
+    assert float(lifetime.state) == pytest.approx(1.096, abs=0.001)
+    assert lifetime.attributes["state_class"] == "total_increasing"
+    assert lifetime.attributes["unit_of_measurement"] == "kWh"
+    assert float(hass.states.get("sensor.apsystems_ecu_peak_power").state) == 710.0
+
+
+async def test_lifetime_stays_available_while_ecu_is_unreachable(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+    await mock_config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.apsystems_ecu_power").state == STATE_UNAVAILABLE
+    lifetime = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
+    assert float(lifetime.state) == pytest.approx(1.096, abs=0.001)
+
+
+async def test_lifetime_survives_removing_and_adding_again(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    mock_config_entry.runtime_data.ledger.calibrate(21_971_040)
+    await hass.config_entries.async_remove(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    again = MockConfigEntry(
+        domain=DOMAIN, unique_id="704000000001", data=dict(mock_config_entry.data)
+    )
+    await setup_entry(hass, again)
+    lifetime = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
+    assert float(lifetime.state) == pytest.approx(21_971.04, abs=0.001)

@@ -25,6 +25,7 @@ from homeassistant.config_entries import (
     SOURCE_DHCP,
     SOURCE_RECONFIGURE,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlowWithReload,
@@ -38,7 +39,9 @@ from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from .const import (
     CONF_ECU_ID,
     CONF_INVERTERS,
+    CONF_LIFETIME_ENERGY,
     CONF_MODEL,
+    CONF_PEAK_POWER,
     CONF_SERIAL_NUMBER,
     CONF_UNIT_ID,
     CONF_UNIT_IDS,
@@ -49,6 +52,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
 )
 from .ecu import REQUEST_TIMEOUT, SUNSPEC_MARKER, Identity, UnsupportedLayoutError
+from .lifetime import async_request_start, async_stored_lifetime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +67,22 @@ MIN_UNIT_ID = 1
 MAX_UNIT_ID = 247
 
 _RANGE = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d+))?\s*$")
+_ECU_ID = re.compile(r"^\d{12}$")
+"""The ECU ID on the label: twelve digits, for example 2160xxxxxxxx."""
+
+_KWH_SELECTOR = selector.NumberSelector(
+    selector.NumberSelectorConfig(
+        min=0,
+        step="any",
+        unit_of_measurement="kWh",
+        mode=selector.NumberSelectorMode.BOX,
+    )
+)
+_WATT_SELECTOR = selector.NumberSelector(
+    selector.NumberSelectorConfig(
+        min=0, step=1, unit_of_measurement="W", mode=selector.NumberSelectorMode.BOX
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -85,11 +105,10 @@ class FoundInverter:
 class ProbeError(Exception):
     """The ECU could not be set up; ``reason`` is a translated error key."""
 
-    def __init__(self, reason: str, details: str = "") -> None:
+    def __init__(self, reason: str) -> None:
         """Remember why probing failed."""
         super().__init__(reason)
         self.reason = reason
-        self.details = details
 
 
 def parse_unit_ids(text: str) -> list[int]:
@@ -174,12 +193,14 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         self._probe_task: asyncio.Task[list[FoundInverter]] | None = None
         self._probe_error: str | None = None
         self._show_confirm = False
+        self._stored_lifetime: float | None = None
+        """Lifetime energy in kWh kept from an earlier setup of this ECU."""
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+    def async_get_options_flow(config_entry: ConfigEntry) -> ApsystemsOptionsFlow:
         """Return the options flow."""
-        return OptionsFlow()
+        return ApsystemsOptionsFlow()
 
     # ---- entry points ----------------------------------------------------
 
@@ -366,6 +387,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 # same patience as normal polling. The link uses the longest
                 # timeout any unit asks for.
                 anchor.require_timeout(REQUEST_TIMEOUT)
+                silent = 0
                 for unit_id in unit_ids:
                     unit = (
                         anchor
@@ -382,9 +404,12 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                         )
                         if found:
                             raise ProbeError("ecu_busy") from None
-                        continue
+                        silent += 1
+                        if silent >= SCAN_STOP_AFTER_MISSES:
+                            # Do not wait out a long list on a silent ECU.
+                            raise ProbeError("no_inverters") from None
         except UnsupportedLayoutError as err:
-            raise ProbeError("unsupported_layout", str(err)) from err
+            raise ProbeError("unsupported_layout") from err
         except ModbusConnectionError as err:
             reason = "modbus_disabled" if _is_refused(err) else "cannot_connect"
             raise ProbeError(reason) from err
@@ -438,52 +463,107 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show what was found and ask for the optional ECU id."""
+        data: dict[str, Any] = {
+            CONF_HOST: self._host,
+            CONF_PORT: self._port,
+            CONF_INVERTERS: [item.as_config() for item in self._found],
+        }
+        if self._mac:
+            data[CONF_MAC] = self._mac
+
+        if self.source == SOURCE_RECONFIGURE:
+            entry = self._get_reconfigure_entry()
+            known = {item[CONF_SERIAL_NUMBER] for item in entry.data[CONF_INVERTERS]}
+            if not known & {item.serial_number for item in self._found}:
+                return self.async_abort(reason="different_ecu")
+            if user_input is not None and not self._show_confirm:
+                return self.async_update_reload_and_abort(
+                    entry, data={**entry.data, **data}
+                )
+            return self._show_found(probatio.Schema({}), {})
+
+        errors: dict[str, str] = {}
         if user_input is not None and not self._show_confirm:
             ecu_id = user_input.get(CONF_ECU_ID, "").strip()
-            data: dict[str, Any] = {
-                CONF_HOST: self._host,
-                CONF_PORT: self._port,
-                CONF_INVERTERS: [item.as_config() for item in self._found],
-            }
-            if self._mac:
-                data[CONF_MAC] = self._mac
-            if ecu_id:
-                data[CONF_ECU_ID] = ecu_id
-            title = f"ECU {ecu_id}" if ecu_id else "APsystems ECU"
+            if ecu_id and not _ECU_ID.match(ecu_id):
+                errors[CONF_ECU_ID] = "invalid_ecu_id"
+            else:
+                if ecu_id:
+                    data[CONF_ECU_ID] = ecu_id
+                return await self._async_create(data, ecu_id, user_input)
+        return await self._show_confirm_form(user_input, errors)
 
-            if self.source == SOURCE_RECONFIGURE:
-                entry = self._get_reconfigure_entry()
-                return self.async_update_reload_and_abort(
-                    entry, data={**entry.data, **data}, title=title
-                )
+    async def _async_create(
+        self, data: dict[str, Any], ecu_id: str, user_input: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Create the entry; the ECU is identified by its first inverter."""
+        unique_id = self._found[0].serial_number
+        await self.async_set_unique_id(unique_id, raise_on_progress=False)
+        # A known ECU on a new address: follow it instead of adding it twice.
+        moved = {CONF_HOST: self._host, CONF_PORT: self._port}
+        if self._mac:
+            moved[CONF_MAC] = self._mac
+        self._abort_if_unique_id_configured(updates=moved)
+        await self._apply_start_value(unique_id, user_input.get(CONF_LIFETIME_ENERGY))
+        title = f"ECU {ecu_id}" if ecu_id else "APsystems ECU"
+        return self.async_create_entry(title=title, data=data)
 
-            unique_id = ecu_id or self._found[0].serial_number
-            await self.async_set_unique_id(unique_id, raise_on_progress=False)
-            # A known ECU on a new address: follow it instead of adding it twice.
-            moved = {CONF_HOST: self._host, CONF_PORT: self._port}
-            if self._mac:
-                moved[CONF_MAC] = self._mac
-            self._abort_if_unique_id_configured(updates=moved)
-            return self.async_create_entry(title=title, data=data)
+    async def _show_confirm_form(
+        self, user_input: Mapping[str, Any] | None, errors: dict[str, str]
+    ) -> ConfigFlowResult:
+        """Ask for the optional ECU id and the energy produced so far."""
+        if self._stored_lifetime is None and not errors:
+            stored = await async_stored_lifetime(
+                self.hass, self._found[0].serial_number
+            )
+            self._stored_lifetime = None if stored is None else round(stored / 1000, 3)
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Optional(CONF_ECU_ID, default=""): cv.string,
+                    probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR,
+                }
+            ),
+            {CONF_LIFETIME_ENERGY: self._stored_lifetime}
+            if user_input is None or self._show_confirm
+            else dict(user_input),
+        )
+        return self._show_found(schema, errors)
 
+    def _show_found(
+        self, schema: probatio.Schema, errors: dict[str, str]
+    ) -> ConfigFlowResult:
         rows = "\n".join(
             f"- {item.unit_id}: {item.model} {item.serial_number}"
             for item in self._found
         )
-        schema = probatio.Schema(
-            {probatio.Optional(CONF_ECU_ID, default=""): cv.string}
-        )
-        if self.source == SOURCE_RECONFIGURE:
-            schema = probatio.Schema({})
         self._show_confirm = False
         return self.async_show_form(
             step_id="confirm",
             data_schema=schema,
+            errors=errors,
             description_placeholders={
                 "count": str(len(self._found)),
                 "inverters": rows,
             },
         )
+
+    async def _apply_start_value(self, ecu_key: str, kwh: float | None) -> None:
+        """Pass the energy produced so far on to the first poll.
+
+        Unchanged from what was kept: nothing to do. Cleared while a stored
+        value was shown: start counting over. Otherwise: start at the value.
+        """
+        if kwh is None:
+            if self._stored_lifetime is not None:
+                await async_request_start(self.hass, ecu_key, None)
+            return
+        if (
+            self._stored_lifetime is not None
+            and abs(kwh - self._stored_lifetime) < 0.001
+        ):
+            return
+        await async_request_start(self.hass, ecu_key, kwh * 1000)
 
     # ---- helpers ---------------------------------------------------------
 
@@ -505,33 +585,77 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-class OptionsFlow(OptionsFlowWithReload):
-    """Polling interval; the integration reloads when it changes."""
+class ApsystemsOptionsFlow(OptionsFlowWithReload):
+    """Poll interval, plus corrections of lifetime energy and peak power.
+
+    The energy and power fields are not options: they correct the stored totals
+    once and are shown with the current values, so leaving them alone changes
+    nothing.
+    """
+
+    def __init__(self) -> None:
+        """Start without shown values."""
+        self._shown: dict[str, float] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show and store the options."""
+        loaded = self.config_entry.state is ConfigEntryState.LOADED
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            if loaded:
+                await self._apply_corrections(user_input)
+            return self.async_create_entry(
+                data={CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL]}
+            )
+        fields: dict[Any, Any] = {}
+        if loaded:
+            ledger = self.config_entry.runtime_data.ledger
+            self._shown = {
+                CONF_LIFETIME_ENERGY: round(ledger.lifetime / 1000, 3),
+                CONF_PEAK_POWER: round(ledger.peak_power),
+            }
+            fields = {
+                probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR,
+                probatio.Optional(CONF_PEAK_POWER): _WATT_SELECTOR,
+            }
         return self.async_show_form(
             step_id="init",
-            data_schema=probatio.Schema(
-                {
-                    probatio.Required(
-                        CONF_SCAN_INTERVAL,
-                        default=self.config_entry.options.get(
-                            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                        ),
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=MIN_SCAN_INTERVAL,
-                            max=MAX_SCAN_INTERVAL,
-                            step=10,
-                            unit_of_measurement="s",
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
-                }
+            data_schema=self.add_suggested_values_to_schema(
+                self._options_schema(fields), self._shown
             ),
+        )
+
+    async def _apply_corrections(self, user_input: Mapping[str, Any]) -> None:
+        """Correct the stored totals where the user changed a shown value."""
+        ledger = self.config_entry.runtime_data.ledger
+        kwh = user_input.get(CONF_LIFETIME_ENERGY)
+        if kwh is not None and abs(kwh - self._shown[CONF_LIFETIME_ENERGY]) >= 0.001:
+            ledger.calibrate(kwh * 1000)
+        watts = user_input.get(CONF_PEAK_POWER)
+        if watts is not None and watts != self._shown[CONF_PEAK_POWER]:
+            ledger.set_peak_power(watts)
+        await ledger.async_save()
+        # Show the corrected values now, also when nothing else changed.
+        self.config_entry.runtime_data.async_update_listeners()
+
+    def _options_schema(self, extra: dict[Any, Any]) -> probatio.Schema:
+        return probatio.Schema(
+            {
+                probatio.Required(
+                    CONF_SCAN_INTERVAL,
+                    default=self.config_entry.options.get(
+                        CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=MIN_SCAN_INTERVAL,
+                        max=MAX_SCAN_INTERVAL,
+                        step=10,
+                        unit_of_measurement="s",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                **extra,
+            }
         )

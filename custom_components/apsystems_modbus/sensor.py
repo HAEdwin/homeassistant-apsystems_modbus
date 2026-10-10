@@ -27,10 +27,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from .const import CONF_INVERTERS, CONF_MODEL
+from .const import CONF_INVERTERS, InverterConfig
 from .coordinator import ApsystemsConfigEntry, EcuCoordinator, EcuData
 from .ecu import MAX_CHANNELS, Inverter, OperatingState, channel_count
 from .entity import EcuEntity, InverterEntity
+from .lifetime import EnergyLedger
 
 # Entities only read coordinator data; no per-entity updates to throttle.
 PARALLEL_UPDATES = 0
@@ -41,6 +42,13 @@ class EcuSensorDescription(SensorEntityDescription):
     """A total computed over all inverters."""
 
     value_fn: Callable[[EcuData], StateType | datetime]
+
+
+@dataclass(frozen=True, kw_only=True)
+class LedgerSensorDescription(SensorEntityDescription):
+    """A total kept by the integration itself, available from storage."""
+
+    value_fn: Callable[[EnergyLedger], float | None]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -66,10 +74,9 @@ ECU_SENSORS: tuple[EcuSensorDescription, ...] = (
         key="energy_today",
         translation_key="energy_today",
         device_class=SensorDeviceClass.ENERGY,
-        # The inverters reset one by one at night, so the sum steps down in
-        # several moves; TOTAL (not TOTAL_INCREASING) keeps that out of the
-        # statistics as a series of meter resets.
-        state_class=SensorStateClass.TOTAL,
+        # No state class: the sum of several counters that restart at different
+        # moments has no meaningful statistics. Lifetime energy is the one for
+        # the Energy dashboard.
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         # Shown like EMA (9.81 kWh); the state keeps Wh resolution.
         suggested_display_precision=2,
@@ -106,8 +113,10 @@ def _dc_reader(quantity: str, channel: int) -> Callable[[Inverter], float | None
     return read
 
 
-def _event_state(inverter: Inverter) -> str:
+def _event_state(inverter: Inverter) -> str | None:
     events = inverter.status.events
+    if events is None:
+        return None
     if not events:
         return "ok"
     return ", ".join(
@@ -124,16 +133,6 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         suggested_display_precision=0,
         value_fn=lambda inverter: inverter.measurements.ac_power,
-    ),
-    InverterSensorDescription(
-        key="energy_today",
-        translation_key="energy_today",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        # Shown like EMA (9.81 kWh); the state keeps Wh resolution.
-        suggested_display_precision=2,
-        value_fn=lambda inverter: _kwh(inverter.measurements.energy_today),
     ),
     InverterSensorDescription(
         key="ac_voltage",
@@ -263,6 +262,47 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
 )
 
 
+LEDGER_SENSORS: tuple[LedgerSensorDescription, ...] = (
+    LedgerSensorDescription(
+        key="lifetime_energy",
+        translation_key="lifetime_energy",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=1,
+        value_fn=lambda ledger: _kwh(ledger.lifetime),
+    ),
+    LedgerSensorDescription(
+        key="peak_power",
+        translation_key="peak_power",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        value_fn=lambda ledger: ledger.peak_power,
+    ),
+)
+
+INVERTER_ENERGY_TODAY = SensorEntityDescription(
+    key="energy_today",
+    translation_key="energy_today",
+    device_class=SensorDeviceClass.ENERGY,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+    native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    # Shown like EMA (9.81 kWh); the state keeps Wh resolution.
+    suggested_display_precision=2,
+)
+
+INVERTER_LIFETIME = SensorEntityDescription(
+    key="lifetime_energy",
+    translation_key="lifetime_energy",
+    device_class=SensorDeviceClass.ENERGY,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+    native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    suggested_display_precision=1,
+    entity_registry_enabled_default=False,
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ApsystemsConfigEntry,
@@ -273,12 +313,19 @@ async def async_setup_entry(
     entities: list[SensorEntity] = [
         EcuSensor(coordinator, description) for description in ECU_SENSORS
     ]
+    entities.extend(
+        LedgerSensor(coordinator, description) for description in LEDGER_SENSORS
+    )
     for item in entry.data[CONF_INVERTERS]:
-        channels = channel_count(str(item[CONF_MODEL]))
+        channels = channel_count(item["model"])
         entities.extend(
             InverterSensor(coordinator, item, description, channels)
             for description in INVERTER_SENSORS
         )
+        entities.append(
+            InverterEnergyTodaySensor(coordinator, item, INVERTER_ENERGY_TODAY)
+        )
+        entities.append(InverterLifetimeSensor(coordinator, item, INVERTER_LIFETIME))
     async_add_entities(entities)
 
 
@@ -312,7 +359,7 @@ class InverterSensor(InverterEntity, SensorEntity):
     def __init__(
         self,
         coordinator: EcuCoordinator,
-        item: dict[str, object],
+        item: InverterConfig,
         description: InverterSensorDescription,
         channels: int,
     ) -> None:
@@ -325,3 +372,50 @@ class InverterSensor(InverterEntity, SensorEntity):
     def native_value(self) -> StateType:
         """Return the last read value."""
         return _rounded(self.entity_description.value_fn(self.inverter))
+
+
+class LedgerSensor(EcuEntity, SensorEntity):
+    """Lifetime energy or peak power of the ECU.
+
+    Comes from storage, so it is available right after a restart and stays
+    available while the ECU is unreachable; the Energy dashboard sees no gap.
+    """
+
+    entity_description: LedgerSensorDescription
+
+    @property
+    def available(self) -> bool:
+        """Available as soon as anything was counted or set."""
+        return self.coordinator.ledger.has_data
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the stored total."""
+        return _rounded(self.entity_description.value_fn(self.coordinator.ledger))
+
+
+class InverterEnergyTodaySensor(InverterEntity, SensorEntity):
+    """Daily counter of one inverter as accepted by the ledger.
+
+    A stray low reading is held back, so it never reaches the statistics as a
+    meter reset; the new day starts once the inverter produces again.
+    """
+
+    @property
+    def native_value(self) -> StateType:
+        """Return today's energy of this inverter."""
+        return _rounded(_kwh(self.coordinator.ledger.today_of(self.serial)))
+
+
+class InverterLifetimeSensor(InverterEntity, SensorEntity):
+    """Lifetime energy of one inverter, without the start value of the ECU."""
+
+    @property
+    def available(self) -> bool:
+        """Available once this inverter has been counted."""
+        return self.coordinator.ledger.lifetime_of(self.serial) is not None
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the counted energy of this inverter."""
+        return _rounded(_kwh(self.coordinator.ledger.lifetime_of(self.serial)))

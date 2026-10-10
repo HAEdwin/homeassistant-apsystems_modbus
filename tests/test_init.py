@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
+from typing import Any
 from unittest.mock import patch
 
 from modbus_connection import ModbusConnectionError, ModbusTimeoutError
@@ -11,7 +13,11 @@ import pytest
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.apsystems_modbus.const import (
     CONF_INVERTERS,
@@ -73,11 +79,27 @@ async def test_silent_ecu_retries_setup(
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
 ) -> None:
-    mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
 
     await setup_entry(hass, mock_config_entry)
 
     assert mock_config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_silent_first_inverter_does_not_block_setup(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
+
+    await setup_entry(hass, mock_config_entry)
+
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.lead.unit_id == 2
+    assert coordinator.data.available == {2}
 
 
 async def test_refused_ecu_retries_setup(
@@ -267,3 +289,36 @@ async def test_first_poll_reads_identity_only_once(
     spans = sorted((e.address, e.count) for e in mock_ecu.for_unit(2).read_events)
     assert spans == [(40052, 60), (40124, 114)]
     assert any(e.address == 40000 for e in mock_ecu.for_unit(1).read_events)
+
+
+async def test_impossible_power_reading_is_not_counted(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    set_float32(mock_ecu.for_unit(2), 40144, 3.0e9)
+    await setup_entry(hass, mock_config_entry)
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.data.power == pytest.approx(204.0)
+    assert coordinator.ledger.peak_power == pytest.approx(204.0)
+
+
+async def test_totals_reach_storage(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    hass_storage: dict[str, Any],
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    key = "apsystems_modbus.704000000001"
+
+    # Written shortly after a poll ...
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
+    await hass.async_block_till_done()
+    assert hass_storage[key]["data"]["reported"] == pytest.approx(1095.87, abs=0.01)
+
+    # ... and right away when the integration unloads.
+    mock_config_entry.runtime_data.ledger.record_power(9999)
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    assert hass_storage[key]["data"]["peak_power"] == 9999

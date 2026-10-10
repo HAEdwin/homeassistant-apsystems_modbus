@@ -35,13 +35,15 @@
         "description": "Set up the APsystems ECU at {host}? Make sure Modbus is enabled on the ECU (EMA Manager, Local Access → Modbus settings) and that nothing else polls it over Modbus."
       },
       "confirm": {
-        "title": "Found {count} inverters",
+        "title": "Inverters found: {count}",
         "description": "{inverters}\n\nCompare the addresses and serial numbers with the Modbus settings in EMA Manager.",
         "data": {
-          "ecu_id": "ECU ID (optional)"
+          "ecu_id": "ECU ID (optional)",
+          "lifetime_energy": "Energy produced so far (optional)"
         },
         "data_description": {
-          "ecu_id": "The number on the ECU label, also shown in EMA Manager. Used for the device name; otherwise the first inverter identifies the ECU."
+          "ecu_id": "The number on the ECU label, also shown in EMA Manager. Used for the device name; otherwise the first inverter identifies the ECU.",
+          "lifetime_energy": "Total energy from the EMA app, in kWh. The lifetime counter continues from here. Leave empty to start at 0."
         }
       }
     },
@@ -56,24 +58,31 @@
       "ecu_busy": "The ECU stopped answering during the search. Stop other Modbus clients, wait five minutes and try again.",
       "unsupported_layout": "The register layout differs from the tested ECU-R. Please share a register dump in an issue.",
       "invalid_unit_ids": "Enter addresses between 1 and 247, for example 1-8 or 1, 2, 5.",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "invalid_ecu_id": "Enter the 12 digits of the ECU ID from the label, or leave it empty."
     },
     "abort": {
       "already_configured": "Device is already configured",
       "already_in_progress": "Configuration flow is already in progress",
       "cannot_connect": "Failed to connect",
-      "reconfigure_successful": "Re-configuration was successful"
+      "reconfigure_successful": "Re-configuration was successful",
+      "different_ecu": "The device at this address is a different ECU. Add it as a new integration instead.",
+      "not_apsystems": "The device at this address is not an APsystems ECU."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Polling",
+        "title": "Settings",
         "data": {
-          "scan_interval": "Poll interval"
+          "scan_interval": "Poll interval",
+          "lifetime_energy": "Lifetime energy",
+          "peak_power": "Peak power"
         },
         "data_description": {
-          "scan_interval": "Seconds between polls. The ECU only refreshes its values about every 5 minutes, so lower values add load without new data."
+          "scan_interval": "Seconds between polls. The ECU only refreshes its values about every 5 minutes, so lower values add load without new data.",
+          "lifetime_energy": "Change only to correct the counter; it continues from the value you enter. The Energy dashboard shows the change once as production in that hour; adjust that hour under Developer tools → Statistics.",
+          "peak_power": "Highest total power so far. Set to 0 to start over."
         }
       }
     }
@@ -154,6 +163,12 @@
       },
       "dc_power": {
         "name": "DC power {channel}"
+      },
+      "lifetime_energy": {
+        "name": "Lifetime energy"
+      },
+      "peak_power": {
+        "name": "Peak power"
       }
     },
     "binary_sensor": {

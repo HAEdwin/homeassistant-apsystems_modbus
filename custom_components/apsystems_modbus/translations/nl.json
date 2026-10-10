@@ -35,13 +35,15 @@
         "description": "De APsystems ECU op {host} instellen? Controleer dat Modbus op de ECU aan staat (EMA Manager, Lokale toegang → Modbus-instellingen) en dat niets anders hem via Modbus uitleest."
       },
       "confirm": {
-        "title": "{count} omvormers gevonden",
+        "title": "Gevonden omvormers: {count}",
         "description": "{inverters}\n\nVergelijk de adressen en serienummers met de Modbus-instellingen in EMA Manager.",
         "data": {
-          "ecu_id": "ECU-ID (optioneel)"
+          "ecu_id": "ECU-ID (optioneel)",
+          "lifetime_energy": "Opbrengst tot nu toe (optioneel)"
         },
         "data_description": {
-          "ecu_id": "Het nummer op het label van de ECU, ook zichtbaar in EMA Manager. Wordt gebruikt voor de apparaatnaam; anders identificeert de eerste omvormer de ECU."
+          "ecu_id": "Het nummer op het label van de ECU, ook zichtbaar in EMA Manager. Wordt gebruikt voor de apparaatnaam; anders identificeert de eerste omvormer de ECU.",
+          "lifetime_energy": "De totale opbrengst uit de EMA-app, in kWh. De lifetime-teller gaat vanaf hier verder. Leeg laten om bij 0 te beginnen."
         }
       }
     },
@@ -56,24 +58,31 @@
       "ecu_busy": "De ECU stopte met antwoorden tijdens het zoeken. Stop andere Modbus-clients, wacht vijf minuten en probeer het opnieuw.",
       "unsupported_layout": "De registerindeling wijkt af van de geteste ECU-R. Deel een registerdump in een issue.",
       "invalid_unit_ids": "Vul adressen tussen 1 en 247 in, bijvoorbeeld 1-8 of 1, 2, 5.",
-      "unknown": "Onverwachte fout"
+      "unknown": "Onverwachte fout",
+      "invalid_ecu_id": "Vul de 12 cijfers van het ECU-ID van het label in, of laat het leeg."
     },
     "abort": {
       "already_configured": "Apparaat is al geconfigureerd",
       "already_in_progress": "De configuratie is al bezig",
       "cannot_connect": "Verbinden mislukt",
-      "reconfigure_successful": "Opnieuw configureren is gelukt"
+      "reconfigure_successful": "Opnieuw configureren is gelukt",
+      "different_ecu": "Het apparaat op dit adres is een andere ECU. Voeg die toe als nieuwe integratie.",
+      "not_apsystems": "Het apparaat op dit adres is geen APsystems ECU."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Uitlezen",
+        "title": "Instellingen",
         "data": {
-          "scan_interval": "Interval"
+          "scan_interval": "Interval",
+          "lifetime_energy": "Totale opbrengst",
+          "peak_power": "Piekvermogen"
         },
         "data_description": {
-          "scan_interval": "Seconden tussen twee uitlezingen. De ECU ververst zijn waarden maar ongeveer elke 5 minuten; lager geeft meer belasting zonder nieuwe gegevens."
+          "scan_interval": "Seconden tussen twee uitlezingen. De ECU ververst zijn waarden maar ongeveer elke 5 minuten; lager geeft meer belasting zonder nieuwe gegevens.",
+          "lifetime_energy": "Alleen aanpassen om de teller te corrigeren; hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur; pas dat uur aan onder Ontwikkelhulpmiddelen → Statistieken.",
+          "peak_power": "Hoogste totaalvermogen tot nu toe. Zet op 0 om opnieuw te beginnen."
         }
       }
     }
@@ -93,6 +102,22 @@
     },
     "no_inverter_answered": {
       "message": "Geen enkele omvormer antwoordde. De ECU is mogelijk druk; de volgende uitlezing probeert het opnieuw."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "state": {
+          "off": "Uit",
+          "sleeping": "Slaapstand",
+          "starting": "Opstarten",
+          "mppt": "Produceert",
+          "throttled": "Begrensd",
+          "shutting_down": "Afsluiten",
+          "fault": "Storing",
+          "standby": "Stand-by"
+        }
+      }
     }
   }
 }

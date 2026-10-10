@@ -20,6 +20,10 @@ from custom_components.apsystems_modbus.const import (
     CONF_UNIT_IDS,
     DOMAIN,
 )
+from custom_components.apsystems_modbus.lifetime import (
+    EnergyLedger,
+    async_request_start,
+)
 
 from .conftest import INVERTERS
 
@@ -85,7 +89,8 @@ async def test_user_flow_with_addresses_and_ecu_id(
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "ECU 216000000000"
-    assert result["result"].unique_id == "216000000000"
+    # The ECU id is only a name; the first inverter identifies the ECU.
+    assert result["result"].unique_id == "703000000002"
     assert result["data"][CONF_ECU_ID] == "216000000000"
     assert [item["unit_id"] for item in result["data"][CONF_INVERTERS]] == [2]
 
@@ -272,6 +277,7 @@ async def test_reconfigure(
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
     assert mock_config_entry.data[CONF_HOST] == "192.0.2.11"
     assert [item["unit_id"] for item in mock_config_entry.data[CONF_INVERTERS]] == [1]
 
@@ -421,3 +427,188 @@ async def test_known_ecu_on_new_address_is_followed(
     assert result["reason"] == "already_configured"
     assert entry.data[CONF_HOST] == HOST
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+def suggested(result: dict, key: str) -> object:
+    """Return the suggested value of a form field."""
+    for marker in result["data_schema"].schema:
+        if marker == key:
+            return (marker.description or {}).get("suggested_value")
+    raise KeyError(key)
+
+
+async def test_start_value_at_setup(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert suggested(result, "lifetime_energy") is None
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"lifetime_energy": 21971.04}
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
+    assert float(state.state) == pytest.approx(21971.04, abs=0.001)
+
+
+async def test_stored_value_is_offered_when_adding_again(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    await async_request_start(hass, "704000000001", None)
+    ledger = EnergyLedger(hass, "704000000001")
+    ledger.record_daily("704000000001", 1000)
+    ledger.finish_poll(complete=True)
+    ledger.calibrate(30_000_000)
+    await ledger.async_save()
+
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert suggested(result, "lifetime_energy") == 30000.0
+
+    # Keeping the offered value continues counting without a new start value.
+    await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"lifetime_energy": 30000.0}
+    )
+    await hass.async_block_till_done()
+    state = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
+    assert float(state.state) >= 30000.0
+
+
+async def test_clearing_the_offered_value_starts_over(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    ledger = EnergyLedger(hass, "704000000001")
+    ledger.calibrate(30_000_000)
+    await ledger.async_save()
+
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
+    assert float(state.state) == pytest.approx(1.096, abs=0.001)
+
+
+async def test_options_correct_lifetime_and_peak(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    assert suggested(result, "lifetime_energy") == pytest.approx(1.096, abs=0.001)
+    assert suggested(result, "peak_power") == 710
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_SCAN_INTERVAL: 300, "lifetime_energy": 25000.0, "peak_power": 0},
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 300}
+    ledger = mock_config_entry.runtime_data.ledger
+    assert ledger.lifetime == pytest.approx(25_000_000, abs=1)
+    # Peak was reset to 0; the first poll after the reload sets it again.
+    assert ledger.peak_power == 710
+
+
+async def test_options_unchanged_values_change_nothing(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    before = mock_config_entry.runtime_data.ledger.lifetime
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_SCAN_INTERVAL: 300,
+            "lifetime_energy": suggested(result, "lifetime_energy"),
+            "peak_power": suggested(result, "peak_power"),
+        },
+    )
+    await hass.async_block_till_done()
+    assert mock_config_entry.runtime_data.ledger.lifetime == pytest.approx(
+        before, abs=1
+    )
+
+
+async def test_invalid_ecu_id(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_ECU_ID: "../2160"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_ECU_ID: "invalid_ecu_id"}
+
+
+async def test_reconfigure_keeps_name_and_ecu_id(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="ECU 216000000000",
+        unique_id="704000000001",
+        data={
+            CONF_HOST: HOST,
+            CONF_PORT: 502,
+            CONF_INVERTERS: INVERTERS,
+            CONF_ECU_ID: "216000000000",
+        },
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.title == "ECU 216000000000"
+    assert entry.data[CONF_ECU_ID] == "216000000000"
+
+
+async def test_reconfigure_to_another_ecu_is_refused(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    other = [{**INVERTERS[0], "serial_number": "704000009999"}]
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="704000009999",
+        data={CONF_HOST: "192.0.2.50", CONF_PORT: 502, CONF_INVERTERS: other},
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "different_ecu"
+    assert entry.data[CONF_HOST] == "192.0.2.50"
+
+
+async def test_silent_address_list_stops_early(
+    hass: HomeAssistant, mock_modbus_connection: MockModbusConnection
+) -> None:
+    for unit_id in range(1, 9):
+        mock_modbus_connection.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+    result = await start_user_flow(hass)
+
+    result = await submit_and_wait(
+        hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-8"}
+    )
+    assert result["errors"] == {"base": "no_inverters"}
+    asked = [u for u in range(1, 9) if mock_modbus_connection.for_unit(u).read_events]
+    assert asked == [1, 2]
