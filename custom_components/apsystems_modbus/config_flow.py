@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 import logging
@@ -52,7 +52,6 @@ from .const import (
     MIN_SCAN_INTERVAL,
 )
 from .ecu import (
-    REQUEST_TIMEOUT,
     SUNSPEC_MARKER,
     Identity,
     UnsupportedLayoutError,
@@ -65,7 +64,11 @@ _LOGGER = logging.getLogger(__name__)
 PROBE_TIMEOUT = 5.0
 """Seconds to wait while searching; an address without an inverter never answers."""
 ATTEMPTS = 2
-"""Reads during setup are tried twice: the ECU is slow while it polls its inverters."""
+"""Tries for an address that may be empty; an empty one never answers."""
+READ_ATTEMPTS = 3
+"""Tries for reads of an inverter that answered: the ECU sometimes needs more
+than one probe timeout while it polls its inverters. The timeout itself stays
+the same during the search, so the connection is never rebuilt halfway."""
 SCAN_START = 1
 SCAN_LIMIT = 32
 SCAN_STOP_AFTER_MISSES = 2
@@ -165,17 +168,20 @@ async def _marker(unit: ModbusUnit, attempts: int = ATTEMPTS) -> str | None:
     )
 
 
+async def _patiently[T](read: Callable[[], Awaitable[T]], what: str) -> T:
+    """Run a read, trying again while it times out."""
+    for _ in range(READ_ATTEMPTS - 1):
+        try:
+            return await read()
+        except ModbusTimeoutError:
+            _LOGGER.debug("%s: no answer yet, trying again", what)
+    return await read()
+
+
 async def _read_identity(unit: ModbusUnit, unit_id: int) -> FoundInverter:
     """Read model 1 of one unit and check the layout."""
     identity = Identity(unit)
-    for attempt in range(ATTEMPTS):
-        try:
-            await identity.async_update()
-            break
-        except ModbusTimeoutError:
-            if attempt == ATTEMPTS - 1:
-                raise
-            _LOGGER.debug("Unit %s: identity read timed out, trying once more", unit_id)
+    await _patiently(identity.async_update, f"Unit {unit_id}")
     identity.check_layout()
     return FoundInverter(
         unit_id=unit_id,
@@ -389,10 +395,6 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                     unit_ids = await self._scan(stack, params, anchor, first)
                 else:
                     unit_ids = self._unit_ids
-                # These addresses answered or were given by the user: allow the
-                # same patience as normal polling. The link uses the longest
-                # timeout any unit asks for.
-                anchor.require_timeout(REQUEST_TIMEOUT)
                 silent = 0
                 first_found: ModbusUnit | None = None
                 for unit_id in unit_ids:
@@ -418,13 +420,19 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                             raise ProbeError("no_inverters") from None
                 if first_found is not None:
                     # All units share one layout: check the controls block once.
-                    await async_check_controls(first_found)
+                    unit = first_found
+                    await _patiently(
+                        lambda: async_check_controls(unit), "Controls block"
+                    )
         except UnsupportedLayoutError as err:
+            _LOGGER.debug("Search stopped: %s", err)
             raise ProbeError("unsupported_layout") from err
         except ModbusConnectionError as err:
+            _LOGGER.debug("Search stopped by a connection error: %r", err)
             reason = "modbus_disabled" if _is_refused(err) else "cannot_connect"
             raise ProbeError(reason) from err
         except ModbusTimeoutError as err:
+            _LOGGER.debug("Search stopped: no answer from the ECU")
             raise ProbeError("cannot_connect") from err
         if not found:
             raise ProbeError("no_inverters")

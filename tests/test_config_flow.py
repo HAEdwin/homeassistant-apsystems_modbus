@@ -361,13 +361,14 @@ async def test_slow_identity_read_is_retried(
     assert result["description_placeholders"]["count"] == "2"
 
 
-async def test_identity_reads_use_the_polling_timeout(
+async def test_search_keeps_one_timeout(
     hass: HomeAssistant, mock_ecu: MockModbusConnection
 ) -> None:
     result = await start_user_flow(hass)
 
     await submit_and_wait(hass, result["flow_id"], USER_INPUT)
-    assert mock_ecu.for_unit(1).required_timeout == 15.0
+    # Changing the timeout halfway would rebuild the connection mid-search.
+    assert mock_ecu.for_unit(1).required_timeout == 5.0
 
 
 async def test_reopened_form_keeps_connection(
@@ -651,3 +652,31 @@ async def test_unsupported_controls_block(
 
     result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
     assert result["errors"] == {"base": "unsupported_layout"}
+
+
+def timeout_twice(value: int):
+    """Return a register source that times out on the first two reads."""
+    calls = 0
+
+    def read() -> int:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise ModbusTimeoutError
+        return value
+
+    return read
+
+
+async def test_slow_identity_gets_three_tries(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    unit = mock_ecu.for_unit(2)
+    unit.holding[40004] = timeout_twice(unit.holding[40004])
+    result = await start_user_flow(hass)
+
+    result = await submit_and_wait(
+        hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-2"}
+    )
+    assert result["step_id"] == "confirm"
+    assert result["description_placeholders"]["count"] == "2"
