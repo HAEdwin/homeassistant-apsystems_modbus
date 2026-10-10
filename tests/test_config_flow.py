@@ -612,3 +612,42 @@ async def test_silent_address_list_stops_early(
     assert result["errors"] == {"base": "no_inverters"}
     asked = [u for u in range(1, 9) if mock_modbus_connection.for_unit(u).read_events]
     assert asked == [1, 2]
+
+
+async def test_search_is_short_after_the_last_inverter(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    for unit_id in (3, 4):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+    result = await start_user_flow(hass)
+
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["description_placeholders"]["count"] == "2"
+    # The first silent address gets two tries, the next one a single try.
+    assert len(mock_ecu.for_unit(3).read_events) == 2
+    assert len(mock_ecu.for_unit(4).read_events) == 1
+
+
+async def test_identity_is_one_read_per_inverter(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    result = await start_user_flow(hass)
+    await submit_and_wait(hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-2"})
+
+    spans_2 = [(e.address, e.count) for e in mock_ecu.for_unit(2).read_events]
+    assert len(spans_2) == 1
+    assert spans_2[0][0] == 40000
+    # The controls header is checked once, on the first inverter.
+    assert (40184, 1) in [
+        (e.address, e.count) for e in mock_ecu.for_unit(1).read_events
+    ]
+
+
+async def test_unsupported_controls_block(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    mock_ecu.for_unit(1).holding[40184] = 160
+    result = await start_user_flow(hass)
+
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["errors"] == {"base": "unsupported_layout"}

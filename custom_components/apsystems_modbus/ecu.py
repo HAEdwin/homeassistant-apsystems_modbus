@@ -58,6 +58,7 @@ ENABLED_VALUES = frozenset({1, ord("1")})
 DISABLED_VALUES = frozenset({0, ord("0")})
 MAX_EXPORT_LIMIT = 100
 
+CONTROLS_HEADER_ADDRESS = 40184
 EXPORT_LIMIT_ADDRESS = 40189
 EXPORT_LIMIT_ENABLED_ADDRESS = 40193
 GRID_CONNECTION_ADDRESS = 40188
@@ -119,9 +120,9 @@ def channel_count(model: str | None) -> int:
 class Identity(Component):
     """SunSpec model 1 plus the model headers that fix the register layout."""
 
-    # Two reads: model 1 with the model 101 and 111 headers, and the
-    # controls header.
-    register_ranges = ((40000, 40123), (40184, 40185))
+    # One read: model 1 with the model 101 and 111 headers. The controls
+    # header is the same on every unit and checked once by ``check_controls``.
+    register_ranges = ((40000, 40123),)
 
     marker = string(40000, 2)
     common_model = integer(40002, signed=False)
@@ -130,7 +131,6 @@ class Identity(Component):
     serial_number = string(40052, 16)
     inverter_int_model = integer(40070, signed=False)
     inverter_float_model = integer(40122, signed=False)
-    controls_model = integer(40184, signed=False)
 
     def check_layout(self) -> None:
         """Raise ``UnsupportedLayoutError`` unless the layout is the known one."""
@@ -145,10 +145,15 @@ class Identity(Component):
             problems.append(f"model {self.inverter_int_model} at 40070")
         if self.inverter_float_model != INVERTER_FLOAT_MODEL:
             problems.append(f"model {self.inverter_float_model} at 40122")
-        if self.controls_model not in CONTROLS_MODELS:
-            problems.append(f"model {self.controls_model} at 40184")
         if problems:
             raise UnsupportedLayoutError("; ".join(problems))
+
+
+async def async_check_controls(unit: ModbusUnit) -> None:
+    """Raise ``UnsupportedLayoutError`` unless the controls block is the known one."""
+    (model,) = await unit.read_holding_registers(CONTROLS_HEADER_ADDRESS, 1)
+    if model not in CONTROLS_MODELS:
+        raise UnsupportedLayoutError(f"model {model} at {CONTROLS_HEADER_ADDRESS}")
 
 
 class Status(Component):
@@ -275,6 +280,7 @@ class Inverter(Device):
             return
         await self.identity.async_update()
         self.identity.check_layout()
+        await async_check_controls(self.modbus_unit)
 
     async def async_set_export_limit(self, percent: float) -> None:
         """Write the export limit percentage; the ECU applies it to all inverters."""

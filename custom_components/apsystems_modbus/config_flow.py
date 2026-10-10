@@ -51,7 +51,13 @@ from .const import (
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
-from .ecu import REQUEST_TIMEOUT, SUNSPEC_MARKER, Identity, UnsupportedLayoutError
+from .ecu import (
+    REQUEST_TIMEOUT,
+    SUNSPEC_MARKER,
+    Identity,
+    UnsupportedLayoutError,
+    async_check_controls,
+)
 from .lifetime import async_request_start, async_stored_lifetime
 
 _LOGGER = logging.getLogger(__name__)
@@ -138,20 +144,20 @@ def _is_refused(err: BaseException) -> bool:
     return False
 
 
-async def _marker(unit: ModbusUnit) -> str | None:
+async def _marker(unit: ModbusUnit, attempts: int = ATTEMPTS) -> str | None:
     """Return the text at 40000-40001, or ``None`` if the address stays silent.
 
     An address without an inverter never answers on the ECU; a SunSpec device
     answers ``"SunS"``.
     """
-    for attempt in range(ATTEMPTS):
+    for attempt in range(attempts):
         try:
             values = await unit.read_holding_registers(40000, 2)
             break
         except ModbusExceptionError:
             return None
         except ModbusTimeoutError:
-            if attempt == ATTEMPTS - 1:
+            if attempt == attempts - 1:
                 return None
             _LOGGER.debug("No answer on 40000, trying once more")
     return b"".join(value.to_bytes(2, "big") for value in values).decode(
@@ -388,6 +394,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 # timeout any unit asks for.
                 anchor.require_timeout(REQUEST_TIMEOUT)
                 silent = 0
+                first_found: ModbusUnit | None = None
                 for unit_id in unit_ids:
                     unit = (
                         anchor
@@ -398,6 +405,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                     try:
                         found.append(await _read_identity(unit, unit_id))
+                        first_found = first_found or unit
                     except ModbusTimeoutError:
                         _LOGGER.debug(
                             "Unit %s: no answer to the identity read", unit_id
@@ -408,6 +416,9 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                         if silent >= SCAN_STOP_AFTER_MISSES:
                             # Do not wait out a long list on a silent ECU.
                             raise ProbeError("no_inverters") from None
+                if first_found is not None:
+                    # All units share one layout: check the controls block once.
+                    await async_check_controls(first_found)
         except UnsupportedLayoutError as err:
             raise ProbeError("unsupported_layout") from err
         except ModbusConnectionError as err:
@@ -426,9 +437,15 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         anchor: ModbusUnit,
         first: int,
     ) -> list[int]:
-        """Walk the addresses from 1 until two in a row stay silent."""
+        """Walk the addresses from 1 until two in a row stay silent.
+
+        The first silent address after an answer gets two tries, so a slow
+        inverter is not missed; the next one gets one try, which keeps the end
+        of the search short. Silent addresses between inverters are tried once
+        more when a later address answers.
+        """
         unit_ids: list[int] = []
-        misses = 0
+        silent: dict[int, ModbusUnit] = {}
         for unit_id in range(first, SCAN_LIMIT + 1):
             unit = (
                 anchor
@@ -438,24 +455,26 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             )
             unit.require_timeout(PROBE_TIMEOUT)
-            marker = await _marker(unit)
+            marker = await _marker(unit, attempts=1 if silent else ATTEMPTS)
             _LOGGER.debug("Address %s: %s", unit_id, marker or "no answer")
             if marker == SUNSPEC_MARKER:
+                for gap_id, gap_unit in silent.items():
+                    if await _marker(gap_unit, attempts=1) == SUNSPEC_MARKER:
+                        unit_ids.append(gap_id)
+                silent.clear()
                 unit_ids.append(unit_id)
-                misses = 0
                 continue
             if marker is not None and not unit_ids:
                 # Something answers, but it is not a SunSpec device.
                 raise ProbeError("not_apsystems")
-            if unit_ids:
-                misses += 1
-                if misses >= SCAN_STOP_AFTER_MISSES:
-                    break
-            elif unit_id - first + 1 >= SCAN_STOP_AFTER_MISSES:
-                # Nothing on the first addresses: the ECU is reachable but no
-                # inverter has an address yet.
-                raise ProbeError("no_inverters")
-        return unit_ids
+            silent[unit_id] = unit
+            if len(silent) >= SCAN_STOP_AFTER_MISSES:
+                if not unit_ids:
+                    # Nothing on the first addresses: the ECU is reachable but
+                    # no inverter has an address yet.
+                    raise ProbeError("no_inverters")
+                break
+        return sorted(unit_ids)
 
     # ---- confirmation ----------------------------------------------------
 
