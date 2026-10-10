@@ -11,7 +11,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.apsystems_modbus.const import DOMAIN
+from custom_components.apsystems_modbus.const import CONF_INVERTERS, DOMAIN
+
+from .conftest import INVERTERS
 
 
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
@@ -150,3 +152,33 @@ async def test_missing_inverter_goes_unavailable_totals_stay(
         hass.states.get("sensor.apsystems_ecu_energy_today").state
     ) == pytest.approx(1.096, abs=0.001)
     assert hass.states.get("sensor.apsystems_ecu_inverters_online").state == "1"
+
+
+async def test_removed_inverter_device_is_cleaned_up(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    registry = dr.async_get(hass)
+    assert registry.async_get_device_by_identifier(
+        (DOMAIN, "703000000002"), mock_config_entry.entry_id
+    )
+
+    # Reconfigured down to unit 1 only.
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        data={**mock_config_entry.data, CONF_INVERTERS: INVERTERS[:1]},
+    )
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (
+        registry.async_get_device_by_identifier(
+            (DOMAIN, "703000000002"), mock_config_entry.entry_id
+        )
+        is None
+    )
+    assert registry.async_get_device_by_identifier(
+        (DOMAIN, "704000000001"), mock_config_entry.entry_id
+    )

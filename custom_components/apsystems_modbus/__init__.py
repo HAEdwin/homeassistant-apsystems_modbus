@@ -14,10 +14,10 @@ from homeassistant.exceptions import (
 )
 from homeassistant.helpers import device_registry as dr
 
-from .const import CONF_INVERTERS, CONF_UNIT_ID, DOMAIN
+from .const import CONF_INVERTERS, CONF_SERIAL_NUMBER, CONF_UNIT_ID, DOMAIN
 from .coordinator import ApsystemsConfigEntry, EcuCoordinator
 from .ecu import Inverter, UnsupportedLayoutError
-from .entity import ecu_device_info
+from .entity import ecu_device_info, ecu_identifier
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
@@ -30,11 +30,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
     """
     params = ModbusTcpParams(host=entry.data[CONF_HOST], port=entry.data[CONF_PORT])
     inverters: dict[int, Inverter] = {}
+    lead_unit_id = min(item[CONF_UNIT_ID] for item in entry.data[CONF_INVERTERS])
     try:
         for item in entry.data[CONF_INVERTERS]:
             unit_id: int = item[CONF_UNIT_ID]
             unit = async_get_unit(hass, entry, params, unit_id)
-            inverters[unit_id] = Inverter(unit, unit_id)
+            inverters[unit_id] = Inverter(
+                unit, unit_id, checks_layout=unit_id == lead_unit_id
+            )
     except HomeAssistantError as err:
         raise ConfigEntryError(
             translation_domain=DOMAIN,
@@ -42,7 +45,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
             translation_placeholders={"host": entry.data[CONF_HOST]},
         ) from err
 
-    lead = inverters[min(inverters)]
+    lead = inverters[lead_unit_id]
     try:
         await lead.async_ensure_setup()
     except UnsupportedLayoutError as err:
@@ -61,15 +64,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
     coordinator = EcuCoordinator(hass, entry, inverters)
     entry.runtime_data = coordinator
     # The inverter devices hang below the ECU device, so register that first.
-    ecu_device = dr.async_get(hass).async_get_or_create(
+    registry = dr.async_get(hass)
+    ecu_device = registry.async_get_or_create(
         config_entry_id=entry.entry_id, **ecu_device_info(entry)
     )
     coordinator.ecu_device_id = ecu_device.id
+    _remove_stale_devices(registry, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_create_background_task(
         hass, coordinator.async_refresh(), f"{DOMAIN} first poll"
     )
     return True
+
+
+def _remove_stale_devices(
+    registry: dr.DeviceRegistry, entry: ApsystemsConfigEntry
+) -> None:
+    """Drop inverters that are no longer configured, e.g. after a replacement."""
+    current = {ecu_identifier(entry)} | {
+        (DOMAIN, item[CONF_SERIAL_NUMBER]) for item in entry.data[CONF_INVERTERS]
+    }
+    for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
+        if not device.identifiers & current:
+            registry.async_update_device(
+                device.id, remove_config_entry_id=entry.entry_id
+            )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -> bool:

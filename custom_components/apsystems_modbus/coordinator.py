@@ -133,8 +133,9 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
     def _serial_matches(self, unit_id: int, inverter: Inverter) -> bool:
         """Guard against a different inverter being moved to a known address."""
         expected = self._expected_serials.get(unit_id)
-        actual = inverter.identity.serial_number
-        if expected is None or actual == expected:
+        actual = inverter.status.serial_number
+        # Unknown when the status read failed this cycle; nothing to compare.
+        if expected is None or actual is None or actual == expected:
             return True
         self._report_once(
             unit_id,

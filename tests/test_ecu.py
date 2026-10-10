@@ -104,7 +104,7 @@ async def test_poll_uses_two_reads(mock_ecu: MockModbusConnection) -> None:
     await inverter.async_poll(Inverter.POLLED)
 
     spans = sorted((event.address, event.count) for event in unit.read_events)
-    assert spans == [(40108, 4), (40124, 114)]
+    assert spans == [(40052, 60), (40124, 114)]
 
 
 async def test_unsupported_layout(mock_ecu: MockModbusConnection) -> None:

@@ -152,10 +152,15 @@ class Identity(Component):
 
 
 class Status(Component):
-    """Operating state and event flags from SunSpec model 101."""
+    """Serial number, operating state and event flags, in one read.
 
-    register_ranges = ((40108, 40111),)
+    The serial number rides along every poll at no extra request, so a
+    different inverter on a known address is noticed right away.
+    """
 
+    register_ranges = ((40052, 40111),)
+
+    serial_number = string(40052, 16)
     operating_state = enum16(40108, OperatingState)
     events = bitfield32(40110, InverterEvent)
 
@@ -247,10 +252,17 @@ class Inverter(Device):
 
     POLLED = ("measurements", "status")
 
-    def __init__(self, unit: ModbusUnit, unit_id: int) -> None:
-        """Bind the register components to a unit of the ECU."""
+    def __init__(
+        self, unit: ModbusUnit, unit_id: int, *, checks_layout: bool = True
+    ) -> None:
+        """Bind the register components to a unit of the ECU.
+
+        All units of one ECU share the same layout, so only one of them needs
+        ``checks_layout``; the others skip the identity read.
+        """
         super().__init__(unit)
         self.unit_id = unit_id
+        self.checks_layout = checks_layout
         unit.require_timeout(REQUEST_TIMEOUT)
         unit.set_message_spacing(MESSAGE_SPACING)
         self.identity = Identity(unit)
@@ -259,6 +271,8 @@ class Inverter(Device):
 
     async def _async_setup(self) -> None:
         """Read the identity once and make sure the layout is the known one."""
+        if not self.checks_layout:
+            return
         await self.identity.async_update()
         self.identity.check_layout()
 

@@ -5,8 +5,8 @@ rules:
     comment: No actions yet; the export limit action arrives with version 0.3.
   appropriate-polling: done
   brands:
-    status: todo
-    comment: Icon to be submitted to home-assistant/brands.
+    status: exempt
+    comment: The icon ships in the repository's brand folder; no external brands entry.
   common-modules: done
   config-flow: done
   config-flow-test-coverage: done
@@ -72,9 +72,7 @@ rules:
   repair-issues:
     status: exempt
     comment: Problems are reported through entity availability and the log.
-  stale-devices:
-    status: todo
-    comment: Devices of inverters removed via reconfigure are not yet cleaned up automatically.
+  stale-devices: done
 
   # Platinum
   async-dependency: done

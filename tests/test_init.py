@@ -254,3 +254,16 @@ async def test_daily_total_keeps_counting_without_one_inverter(
     assert coordinator.data.available == {1}
     assert coordinator.data.energy_today == pytest.approx(600.0 + 541.79, abs=0.01)
     assert coordinator.data.energy_today > before
+
+
+async def test_first_poll_reads_identity_only_once(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+
+    # Unit 2 only gets the two polling reads; the layout is checked on unit 1.
+    spans = sorted((e.address, e.count) for e in mock_ecu.for_unit(2).read_events)
+    assert spans == [(40052, 60), (40124, 114)]
+    assert any(e.address == 40000 for e in mock_ecu.for_unit(1).read_events)
