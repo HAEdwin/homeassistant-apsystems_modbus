@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Verbinden met de ECU",
-        "description": "De ECU moet via een netwerkkabel aangesloten zijn en Modbus moet op de ECU aan staan (EMA Manager-app via het eigen wifi-netwerk van de ECU: Lokale toegang → Werkruimte → Modbus-instellingen). Laat niets anders de ECU via Modbus uitlezen; hij raakt snel overbelast.",
+        "description": "De ECU moet via een netwerkkabel aangesloten zijn en Modbus moet op de ECU aan staan (EMA Manager-app via het eigen wifi-netwerk van de ECU: Lokale toegang → Werkruimte → Modbus-instellingen). Laat niets anders de ECU via Modbus uitlezen, want hij raakt snel overbelast.",
         "data": {
           "host": "Host",
           "port": "Poort",
@@ -18,7 +18,7 @@
       },
       "reconfigure": {
         "title": "Verbinding wijzigen",
-        "description": "Omvormers worden herkend aan hun serienummer; een ander adres behoudt dus de historie.",
+        "description": "Omvormers worden herkend aan hun serienummer. Een ander adres behoudt dus de historie.",
         "data": {
           "host": "Host",
           "port": "Poort",
@@ -42,7 +42,7 @@
           "lifetime_energy": "Totale opbrengst (optioneel)"
         },
         "data_description": {
-          "ecu_id": "Het nummer op het label van de ECU, ook zichtbaar in EMA Manager. Wordt gebruikt voor de apparaatnaam; anders identificeert de eerste omvormer de ECU.",
+          "ecu_id": "Het nummer op het label van de ECU, ook zichtbaar in EMA Manager. Wordt gebruikt voor de apparaatnaam. Zonder dit nummer identificeert de eerste omvormer de ECU.",
           "lifetime_energy": "De totale opbrengst uit de EMA-app, in kWh. De lifetime-teller gaat vanaf hier verder. Leeg laten om bij 0 te beginnen."
         }
       }
@@ -51,7 +51,7 @@
       "scan": "Zoeken naar omvormers. Dit duurt maximaal een minuut."
     },
     "error": {
-      "cannot_connect": "Geen antwoord van de ECU. Controleer het IP-adres en sluit de ECU aan via een netwerkkabel; Modbus TCP werkt niet via wifi.",
+      "cannot_connect": "Geen antwoord van de ECU. Controleer het IP-adres en sluit de ECU aan via een netwerkkabel. Modbus TCP werkt niet via wifi.",
       "modbus_disabled": "De ECU weigerde de verbinding. Modbus staat standaard uit: druk op de AP-knop van de ECU, verbind met zijn wifi-netwerk, open EMA Manager via Lokale toegang en zet Modbus aan onder Werkruimte → Modbus-instellingen, met een adres per omvormer. Probeer het daarna opnieuw.",
       "not_apsystems": "Het apparaat op dit adres is geen APsystems ECU.",
       "no_inverters": "Geen enkele omvormer antwoordde. Geef elke omvormer een adres in de Modbus-instellingen van EMA Manager (Lokale toegang), of vul de adressen hier in.",
@@ -80,8 +80,8 @@
           "peak_power": "Piekvermogen ooit"
         },
         "data_description": {
-          "scan_interval": "Seconden tussen twee uitlezingen. De ECU ververst zijn waarden maar ongeveer elke 5 minuten; lager geeft meer belasting zonder nieuwe gegevens.",
-          "lifetime_energy": "Alleen aanpassen om de teller te corrigeren; hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur; pas dat uur aan onder Ontwikkelhulpmiddelen → Statistieken.",
+          "scan_interval": "Seconden tussen twee uitlezingen. De ECU ververst zijn waarden maar ongeveer elke 5 minuten, dus lager geeft alleen meer belasting.",
+          "lifetime_energy": "Alleen aanpassen om de teller te corrigeren. Hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur. Dat uur kun je aanpassen onder Ontwikkelhulpmiddelen → Statistieken.",
           "peak_power": "Hoogste totaalvermogen tot nu toe. Zet op 0 om opnieuw te beginnen."
         }
       }
@@ -101,10 +101,10 @@
       "message": "De verbinding met de ECU is verbroken. Bij de volgende uitlezing wordt het opnieuw geprobeerd."
     },
     "no_inverter_answered": {
-      "message": "Geen enkele omvormer antwoordde. De ECU is mogelijk druk; de volgende uitlezing probeert het opnieuw."
+      "message": "Geen enkele omvormer antwoordde. De ECU is mogelijk druk, dus de volgende uitlezing probeert het opnieuw."
     },
     "power_limit_pending": {
-      "message": "De ECU heeft de vermogenslimiet van {percent} % nog niet aangenomen. De integratie schrijft hem bij de volgende uitlezing opnieuw; de slider toont intussen wat de ECU meldt."
+      "message": "De ECU heeft de vermogenslimiet van {percent} % nog niet aangenomen. De integratie schrijft hem bij de volgende uitlezing opnieuw. Tot die tijd toont de slider wat de ECU meldt."
     },
     "power_limit_invalid": {
       "message": "{value} is geen geldige vermogenslimiet. Vul een heel getal van 0 tot 100 in."

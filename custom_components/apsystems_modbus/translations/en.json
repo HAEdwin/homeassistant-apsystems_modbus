@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to the ECU",
-        "description": "The ECU must be connected by Ethernet cable and Modbus must be enabled on the ECU (EMA Manager app via the ECU's access point: Local Access → Workspace → Modbus settings). Nothing else should poll the ECU over Modbus; it overloads easily.",
+        "description": "The ECU must be connected by Ethernet cable and Modbus must be enabled on the ECU (EMA Manager app via the ECU's access point: Local Access → Workspace → Modbus settings). Nothing else should poll the ECU over Modbus, because it overloads easily.",
         "data": {
           "host": "Host",
           "port": "Port",
@@ -42,7 +42,7 @@
           "lifetime_energy": "Lifetime energy (optional)"
         },
         "data_description": {
-          "ecu_id": "The number on the ECU label, also shown in EMA Manager. Used for the device name; otherwise the first inverter identifies the ECU.",
+          "ecu_id": "The number on the ECU label, also shown in EMA Manager. Used for the device name. Without it, the first inverter identifies the ECU.",
           "lifetime_energy": "Total energy from the EMA app, in kWh. The lifetime counter continues from here. Leave empty to start at 0."
         }
       }
@@ -51,7 +51,7 @@
       "scan": "Searching for inverters. This takes up to a minute."
     },
     "error": {
-      "cannot_connect": "No answer from the ECU. Check the IP address and connect the ECU by Ethernet cable; Modbus TCP is not available over Wi-Fi.",
+      "cannot_connect": "No answer from the ECU. Check the IP address and connect the ECU by Ethernet cable. Modbus TCP does not work over Wi-Fi.",
       "modbus_disabled": "The ECU refused the connection. Modbus is off by default: press the AP button on the ECU, connect to its Wi-Fi, open EMA Manager with Local Access and enable Modbus under Workspace → Modbus settings with an address for every inverter. Then try again.",
       "not_apsystems": "The device at this address is not an APsystems ECU.",
       "no_inverters": "No inverter answered. Give each inverter an address in the Modbus settings of EMA Manager (Local Access), or enter the addresses here.",
@@ -81,7 +81,7 @@
         },
         "data_description": {
           "scan_interval": "Seconds between polls. The ECU only refreshes its values about every 5 minutes, so lower values add load without new data.",
-          "lifetime_energy": "Change only to correct the counter; it continues from the value you enter. The Energy dashboard shows the change once as production in that hour; adjust that hour under Developer tools → Statistics.",
+          "lifetime_energy": "Change only to correct the counter. It continues from the value you enter. The Energy dashboard shows the change once as production in that hour. You can adjust that hour under Developer tools → Statistics.",
           "peak_power": "Highest total power so far. Set to 0 to start over."
         }
       }
@@ -101,10 +101,10 @@
       "message": "The connection to the ECU was lost. It is retried at the next poll."
     },
     "no_inverter_answered": {
-      "message": "No inverter answered. The ECU may be busy; the next poll tries again."
+      "message": "No inverter answered. The ECU may be busy, so the next poll tries again."
     },
     "power_limit_pending": {
-      "message": "The ECU did not accept the power limit of {percent} % yet. The integration writes it again at the next poll; the slider shows what the ECU reports in the meantime."
+      "message": "The ECU did not accept the power limit of {percent} % yet. The integration writes it again at the next poll. Until then the slider shows what the ECU reports."
     },
     "power_limit_invalid": {
       "message": "{value} is not a valid power limit. Enter a whole number from 0 to 100."
