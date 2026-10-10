@@ -32,7 +32,7 @@ async def test_online_and_grid_connection(
     )
 
     registry = er.async_get(hass)
-    grid = registry.async_get("binary_sensor.apsystems_ecu_grid_connection")
+    grid = registry.async_get("binary_sensor.apsystems_ecu_inverters_enabled")
     assert grid is not None
     assert grid.disabled_by is er.RegistryEntryDisabler.INTEGRATION
 
@@ -47,11 +47,11 @@ async def test_grid_connection_unavailable_without_lead_inverter(
     await hass.async_block_till_done()
     registry = er.async_get(hass)
     registry.async_update_entity(
-        "binary_sensor.apsystems_ecu_grid_connection", disabled_by=None
+        "binary_sensor.apsystems_ecu_inverters_enabled", disabled_by=None
     )
     await hass.config_entries.async_reload(mock_config_entry.entry_id)
     await hass.async_block_till_done()
-    entity_id = "binary_sensor.apsystems_ecu_grid_connection"
+    entity_id = "binary_sensor.apsystems_ecu_inverters_enabled"
     assert hass.states.get(entity_id).state == STATE_ON
 
     mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())

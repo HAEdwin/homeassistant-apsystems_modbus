@@ -39,7 +39,7 @@
         "description": "{inverters}\n\nCompare the addresses and serial numbers with the Modbus settings in EMA Manager.",
         "data": {
           "ecu_id": "ECU ID (optional)",
-          "lifetime_energy": "Energy produced so far (optional)"
+          "lifetime_energy": "Lifetime energy (optional)"
         },
         "data_description": {
           "ecu_id": "The number on the ECU label, also shown in EMA Manager. Used for the device name; otherwise the first inverter identifies the ECU.",
@@ -77,7 +77,7 @@
         "data": {
           "scan_interval": "Poll interval",
           "lifetime_energy": "Lifetime energy",
-          "peak_power": "Peak power"
+          "peak_power": "Lifetime peak power"
         },
         "data_description": {
           "scan_interval": "Seconds between polls. The ECU only refreshes its values about every 5 minutes, so lower values add load without new data.",
@@ -151,7 +151,7 @@
           "off": "Off",
           "sleeping": "Sleeping",
           "starting": "Starting",
-          "mppt": "Producing",
+          "mppt": "MPPT",
           "throttled": "Throttled",
           "shutting_down": "Shutting down",
           "fault": "Fault",
@@ -174,7 +174,7 @@
         "name": "Lifetime energy"
       },
       "peak_power": {
-        "name": "Peak power"
+        "name": "Lifetime peak power"
       }
     },
     "binary_sensor": {
@@ -182,7 +182,7 @@
         "name": "Online"
       },
       "grid_connection": {
-        "name": "Grid connection"
+        "name": "Inverters enabled"
       }
     },
     "number": {

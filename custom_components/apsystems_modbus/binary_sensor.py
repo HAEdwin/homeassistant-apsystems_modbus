@@ -25,10 +25,12 @@ ONLINE = BinarySensorEntityDescription(
     entity_category=EntityCategory.DIAGNOSTIC,
 )
 
+# Shown as "Inverters enabled": whether the ECU has the inverters switched on.
+# It does not say whether they produce; at night it still reads on. No device
+# class, so the state reads On/Off rather than Connected/Disconnected.
 GRID_CONNECTION = BinarySensorEntityDescription(
     key="grid_connection",
     translation_key="grid_connection",
-    device_class=BinarySensorDeviceClass.CONNECTIVITY,
     entity_category=EntityCategory.DIAGNOSTIC,
     entity_registry_enabled_default=False,
 )
@@ -61,7 +63,7 @@ class InverterOnlineSensor(InverterEntity, BinarySensorEntity):
 
 
 class GridConnectionSensor(EcuEntity, BinarySensorEntity):
-    """Grid connection flag of the controls block; read only, never written."""
+    """The Conn flag of the controls block; read only, never written."""
 
     @property
     def available(self) -> bool:

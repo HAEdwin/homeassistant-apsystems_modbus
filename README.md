@@ -87,14 +87,14 @@ The confirmation screen lists the inverters found per address with their
 serial numbers; compare it with the table in EMA Manager. Two optional fields:
 
 - **ECU ID** from the label, used for the device name.
-- **Energy produced so far**: the total energy shown in the EMA app, in kWh.
+- **Lifetime energy**: the total energy shown in the EMA app, in kWh.
   The lifetime counter continues from there. Leave it empty to start at 0.
 
 Settings (*Configure* on the integration):
 
 - **Poll interval**, default 300 s. The ECU refreshes its values about every
   5 minutes, so polling faster adds load without new data.
-- **Lifetime energy** and **peak power**, shown with their current values.
+- **Lifetime energy** and **lifetime peak power**, shown with their current values.
   Change them only to correct the counters; leaving them as they are changes
   nothing.
 
@@ -124,13 +124,15 @@ under *Developer tools → Statistics → Lifetime energy*.
 ## What you get
 
 **ECU device:** power limit (control), power, energy today, lifetime energy,
-peak power, inverters online, last data update (diagnostic), grid connection
-(diagnostic, disabled by default).
+lifetime peak power, inverters online, last data update (diagnostic), inverters
+enabled (diagnostic, disabled by default; the ECU's own on/off flag, which
+stays on at night).
 
 **Per inverter:** power, energy today, AC voltage, AC current, frequency,
 temperature, status, event code, DC voltage/current/power per channel, online.
-Disabled by default: lifetime energy per inverter, apparent power, reactive
-power, power factor and DC channels the inverter model does not have.
+Disabled by default: lifetime energy per inverter (counted from the moment
+the integration was added), apparent power, reactive power, power factor and
+DC channels the inverter model does not have.
 
 Entity names are English for everyone, so entity IDs are the same in every
 installation. Device names can be changed in Home Assistant.

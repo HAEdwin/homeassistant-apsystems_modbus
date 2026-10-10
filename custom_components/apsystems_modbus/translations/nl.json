@@ -39,7 +39,7 @@
         "description": "{inverters}\n\nVergelijk de adressen en serienummers met de Modbus-instellingen in EMA Manager.",
         "data": {
           "ecu_id": "ECU-ID (optioneel)",
-          "lifetime_energy": "Opbrengst tot nu toe (optioneel)"
+          "lifetime_energy": "Totale opbrengst (optioneel)"
         },
         "data_description": {
           "ecu_id": "Het nummer op het label van de ECU, ook zichtbaar in EMA Manager. Wordt gebruikt voor de apparaatnaam; anders identificeert de eerste omvormer de ECU.",
@@ -77,7 +77,7 @@
         "data": {
           "scan_interval": "Interval",
           "lifetime_energy": "Totale opbrengst",
-          "peak_power": "Piekvermogen"
+          "peak_power": "Piekvermogen ooit"
         },
         "data_description": {
           "scan_interval": "Seconden tussen twee uitlezingen. De ECU ververst zijn waarden maar ongeveer elke 5 minuten; lager geeft meer belasting zonder nieuwe gegevens.",
@@ -117,7 +117,7 @@
           "off": "Uit",
           "sleeping": "Slaapstand",
           "starting": "Opstarten",
-          "mppt": "Produceert",
+          "mppt": "MPPT",
           "throttled": "Begrensd",
           "shutting_down": "Afsluiten",
           "fault": "Storing",

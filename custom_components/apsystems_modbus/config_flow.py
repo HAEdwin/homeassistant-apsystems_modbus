@@ -578,12 +578,12 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _show_confirm_form(
         self, user_input: Mapping[str, Any] | None, errors: dict[str, str]
     ) -> ConfigFlowResult:
-        """Ask for the optional ECU id and the energy produced so far."""
+        """Ask for the optional ECU id and the lifetime energy so far."""
         if self._stored_lifetime is None and not errors:
             stored = await async_stored_lifetime(
                 self.hass, self._found[0].serial_number
             )
-            self._stored_lifetime = None if stored is None else round(stored / 1000, 3)
+            self._stored_lifetime = None if stored is None else round(stored / 1000, 1)
         schema = self.add_suggested_values_to_schema(
             probatio.Schema(
                 {
@@ -679,7 +679,7 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
         if loaded:
             ledger = self.config_entry.runtime_data.ledger
             self._shown = {
-                CONF_LIFETIME_ENERGY: round(ledger.lifetime / 1000, 3),
+                CONF_LIFETIME_ENERGY: round(ledger.lifetime / 1000, 1),
                 CONF_PEAK_POWER: round(ledger.peak_power),
             }
             fields = {

@@ -509,7 +509,7 @@ async def test_options_correct_lifetime_and_peak(
     await hass.async_block_till_done()
 
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
-    assert suggested(result, "lifetime_energy") == pytest.approx(1.096, abs=0.001)
+    assert suggested(result, "lifetime_energy") == 1.1
     assert suggested(result, "peak_power") == 710
 
     result = await hass.config_entries.options.async_configure(
