@@ -71,7 +71,8 @@ ECU_SENSORS: tuple[EcuSensorDescription, ...] = (
         # statistics as a series of meter resets.
         state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        suggested_display_precision=3,
+        # Shown like EMA (9.81 kWh); the state keeps Wh resolution.
+        suggested_display_precision=2,
         value_fn=lambda data: _kwh(data.energy_today),
     ),
     EcuSensorDescription(
@@ -130,7 +131,8 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        suggested_display_precision=3,
+        # Shown like EMA (9.81 kWh); the state keeps Wh resolution.
+        suggested_display_precision=2,
         value_fn=lambda inverter: _kwh(inverter.measurements.energy_today),
     ),
     InverterSensorDescription(

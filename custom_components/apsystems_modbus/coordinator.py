@@ -40,7 +40,7 @@ class EcuData:
     power: float = 0.0
     """Sum of the AC power of the available inverters, in W."""
     energy_today: float | None = None
-    """Sum of the daily counters in Wh; kept when an inverter is missing."""
+    """Sum of the daily counters in Wh; a missing inverter counts as last read."""
     online: int = 0
     """Inverters that are feeding in."""
     last_change: datetime | None = None
@@ -77,8 +77,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             update_interval=self._base_interval,
         )
         self.inverters = inverters
-        self.lead_unit_id = min(inverters)
-        self.lead = inverters[self.lead_unit_id]
+        self.lead = inverters[min(inverters)]
         self.write_lock = asyncio.Lock()
         self.ecu_device_id: str | None = None
         """Device registry id of the ECU, set once the device is registered."""
@@ -90,7 +89,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         self._reported: set[int] = set()
         self._snapshot: dict[int, tuple[float | None, float | None]] = {}
         self._last_change: datetime | None = None
-        self._energy_today: float | None = None
+        self._last_energy: dict[int, float] = {}
+        """Last daily counter per inverter, kept while an inverter is missing."""
 
     async def _async_update_data(self) -> EcuData:
         data = EcuData()
@@ -102,7 +102,10 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 try:
                     report = await inverter.async_poll(Inverter.POLLED)
                 except ModbusConnectionError as err:
-                    raise UpdateFailed(f"Connection to the ECU lost: {err}") from err
+                    raise UpdateFailed(
+                        translation_domain=DOMAIN,
+                        translation_key="connection_lost",
+                    ) from err
                 except ModbusTimeoutError:
                     timeouts += 1
                     continue
@@ -120,7 +123,10 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
 
         await self._pace(timeouts)
         if not data.available:
-            raise UpdateFailed("No inverter answered")
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="no_inverter_answered",
+            )
         self._aggregate(data)
         return data
 
@@ -160,7 +166,9 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                     self.update_interval,
                 )
             return
-        if self._degraded and timeouts == 0:
+        # A cycle that was not cut short means the ECU answers again, even if
+        # one inverter stays silent (for example a broken one).
+        if self._degraded:
             self._degraded = False
             self.update_interval = self._base_interval
             _LOGGER.info("The ECU is answering again; normal polling resumed")
@@ -168,20 +176,21 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
     def _aggregate(self, data: EcuData) -> None:
         """Compute the ECU totals from the inverters read this cycle."""
         snapshot: dict[int, tuple[float | None, float | None]] = {}
-        energy = 0.0
         for unit_id in data.available:
             measurements = self.inverters[unit_id].measurements
             power = measurements.ac_power or 0.0
             data.power += power
             if measurements.is_online:
                 data.online += 1
-            energy += measurements.energy_today or 0.0
+            if measurements.energy_today is not None:
+                self._last_energy[unit_id] = measurements.energy_today
             snapshot[unit_id] = (measurements.energy_today, measurements.ac_power)
 
-        # A partial cycle would make the daily total dip; keep the last full sum.
-        if len(data.available) == len(self.inverters):
-            self._energy_today = energy
-        data.energy_today = self._energy_today
+        # An inverter that did not answer counts with its last known counter, so
+        # the total neither dips nor freezes while one inverter is missing.
+        data.energy_today = (
+            sum(self._last_energy.values()) if self._last_energy else None
+        )
 
         changed = any(
             self._snapshot.get(unit) != value for unit, value in snapshot.items()

@@ -21,7 +21,7 @@ from custom_components.apsystems_modbus.const import (
     MAX_BACKOFF,
 )
 
-from .conftest import INVERTERS, add_inverter
+from .conftest import INVERTERS, add_inverter, set_float32
 
 
 @pytest.fixture(autouse=True)
@@ -213,3 +213,44 @@ async def test_write_lock_lets_write_go_between_inverters(
         assert not refresh.done()
     await refresh
     assert coordinator.last_update_success is True
+
+
+async def test_interval_recovers_while_one_inverter_stays_silent(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    base_interval = coordinator.update_interval
+
+    # The whole ECU stops answering: the interval backs off.
+    mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    assert coordinator.update_interval == base_interval * 2
+
+    # The ECU is back, but unit 2 stays broken: normal polling resumes anyway.
+    mock_ecu.for_unit(1).fail_requests(None)
+    await coordinator.async_refresh()
+    assert coordinator.data.available == {1}
+    assert coordinator.update_interval == base_interval
+
+
+async def test_daily_total_keeps_counting_without_one_inverter(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    before = coordinator.data.energy_today
+
+    # Unit 2 drops out for good; unit 1 keeps producing.
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    set_float32(mock_ecu.for_unit(1), 40154, 600.0)
+    await coordinator.async_refresh()
+
+    assert coordinator.data.available == {1}
+    assert coordinator.data.energy_today == pytest.approx(600.0 + 541.79, abs=0.01)
+    assert coordinator.data.energy_today > before

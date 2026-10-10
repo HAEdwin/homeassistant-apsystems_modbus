@@ -87,6 +87,12 @@
     },
     "unsupported_layout": {
       "message": "The device does not serve the register layout of a supported APsystems ECU ({details}). Please share a register dump in an issue."
+    },
+    "connection_lost": {
+      "message": "The connection to the ECU was lost. It is retried at the next poll."
+    },
+    "no_inverter_answered": {
+      "message": "No inverter answered. The ECU may be busy; the next poll tries again."
     }
   },
   "entity": {

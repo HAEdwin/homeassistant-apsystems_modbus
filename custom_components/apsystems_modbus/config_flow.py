@@ -459,7 +459,11 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
 
             unique_id = ecu_id or self._found[0].serial_number
             await self.async_set_unique_id(unique_id, raise_on_progress=False)
-            self._abort_if_unique_id_configured()
+            # A known ECU on a new address: follow it instead of adding it twice.
+            moved = {CONF_HOST: self._host, CONF_PORT: self._port}
+            if self._mac:
+                moved[CONF_MAC] = self._mac
+            self._abort_if_unique_id_configured(updates=moved)
             return self.async_create_entry(title=title, data=data)
 
         rows = "\n".join(

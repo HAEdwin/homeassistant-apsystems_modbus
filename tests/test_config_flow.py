@@ -401,3 +401,23 @@ async def test_dhcp_failure_returns_to_discovery_screen(
     result = await submit_and_wait(hass, result["flow_id"], {})
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "2"
+
+
+async def test_known_ecu_on_new_address_is_followed(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="704000000001",
+        data={CONF_HOST: "192.0.2.99", CONF_PORT: 502, CONF_INVERTERS: INVERTERS},
+    )
+    entry.add_to_hass(hass)
+    result = await start_user_flow(hass)
+
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert entry.data[CONF_HOST] == HOST
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1

@@ -25,8 +25,6 @@ async def test_identity(mock_ecu: MockModbusConnection) -> None:
     assert inverter.identity.manufacturer == "APsystems"
     assert inverter.identity.model == "DS3"
     assert inverter.identity.serial_number == "704000000001"
-    assert inverter.identity.unit_id == 1
-    assert inverter.channel_count == 2
 
 
 async def test_measurements_by_day(mock_ecu: MockModbusConnection) -> None:

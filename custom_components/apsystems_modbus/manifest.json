@@ -1,17 +1,25 @@
 {
   "domain": "apsystems_modbus",
   "name": "APsystems Modbus",
-  "codeowners": ["@christianvaes"],
+  "codeowners": [
+    "@christianvaes"
+  ],
   "config_flow": true,
-  "dependencies": ["modbus"],
+  "dependencies": [
+    "modbus"
+  ],
   "dhcp": [
-    { "macaddress": "80971B*" },
-    { "registered_devices": true }
+    {
+      "macaddress": "80971B*"
+    },
+    {
+      "registered_devices": true
+    }
   ],
   "documentation": "https://github.com/christianvaes/homeassistant-apsystems_modbus",
   "integration_type": "hub",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/christianvaes/homeassistant-apsystems_modbus/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

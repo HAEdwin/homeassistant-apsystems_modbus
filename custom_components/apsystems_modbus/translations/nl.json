@@ -87,6 +87,12 @@
     },
     "unsupported_layout": {
       "message": "Het apparaat heeft niet de registerindeling van een ondersteunde APsystems ECU ({details}). Deel een registerdump in een issue."
+    },
+    "connection_lost": {
+      "message": "De verbinding met de ECU is verbroken. Bij de volgende uitlezing wordt het opnieuw geprobeerd."
+    },
+    "no_inverter_answered": {
+      "message": "Geen enkele omvormer antwoordde. De ECU is mogelijk druk; de volgende uitlezing probeert het opnieuw."
     }
   }
 }

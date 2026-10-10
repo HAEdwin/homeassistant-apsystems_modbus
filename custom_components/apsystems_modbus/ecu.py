@@ -127,9 +127,7 @@ class Identity(Component):
     common_model = integer(40002, signed=False)
     manufacturer = string(40004, 16)
     model = string(40020, 16)
-    options = string(40036, 8)
     serial_number = string(40052, 16)
-    unit_id = integer(40068, signed=False)
     inverter_int_model = integer(40070, signed=False)
     inverter_float_model = integer(40122, signed=False)
     controls_model = integer(40184, signed=False)
@@ -263,11 +261,6 @@ class Inverter(Device):
         """Read the identity once and make sure the layout is the known one."""
         await self.identity.async_update()
         self.identity.check_layout()
-
-    @property
-    def channel_count(self) -> int:
-        """Number of DC inputs, derived from the model name."""
-        return channel_count(self.identity.model)
 
     async def async_set_export_limit(self, percent: float) -> None:
         """Write the export limit percentage; the ECU applies it to all inverters."""

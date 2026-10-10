@@ -64,6 +64,16 @@ class GridConnectionSensor(EcuEntity, BinarySensorEntity):
     """Grid connection flag of the controls block; read only, never written."""
 
     @property
+    def available(self) -> bool:
+        """Available while the inverter the flag is read from answered."""
+        data = self.coordinator.data
+        return (
+            super().available
+            and data is not None
+            and self.coordinator.lead.unit_id in data.available
+        )
+
+    @property
     def is_on(self) -> bool | None:
         """Return the flag as read from the lead inverter."""
         return self.coordinator.lead.measurements.grid_connected
