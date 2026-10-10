@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from modbus_connection import ModbusError, ModbusTcpParams, ModbusTimeoutError
 
-from homeassistant.components.modbus import async_get_unit
+from homeassistant.components import persistent_notification
+from homeassistant.components.modbus import async_get_temporary_unit, async_get_unit
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import (
@@ -19,8 +22,11 @@ from .coordinator import ApsystemsConfigEntry, EcuCoordinator
 from .ecu import Inverter, UnsupportedLayoutError
 from .entity import ecu_device_info, ecu_identifier
 from .lifetime import EnergyLedger
+from .power_limit import NO_LIMIT, effective_limit
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
+_LOGGER = logging.getLogger(__name__)
+
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SENSOR]
 LAYOUT_CHECK_ATTEMPTS = 2
 
 
@@ -122,3 +128,59 @@ async def async_unload_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
     if unloaded:
         await entry.runtime_data.ledger.async_save()
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -> None:
+    """Release a power limit that is still set, so the inverters are not left limited.
+
+    If the limit could not be checked or released, the user is told, because
+    nothing else would release it any more.
+    """
+    try:
+        released = await _async_release_limit(hass, entry)
+    except (ModbusError, HomeAssistantError) as err:
+        _LOGGER.warning("Could not release the power limit on removal: %s", err)
+        released = False
+    if released:
+        return
+    persistent_notification.async_create(
+        hass,
+        "The APsystems ECU could not be checked while the integration was "
+        "removed. If a power limit was set, the inverters may still be "
+        "limited. Add the integration again and set the power limit to 100 %.",
+        title="APsystems Modbus",
+        notification_id=f"{DOMAIN}_power_limit_{entry.entry_id}",
+    )
+
+
+async def _async_release_limit(
+    hass: HomeAssistant, entry: ApsystemsConfigEntry
+) -> bool:
+    """Read the limit through the first inverter that answers and release it if set.
+
+    The entry is already unloaded, so a short-lived connection is used. Nothing
+    is written when the readback cannot be interpreted. Returns whether the
+    limit is known to be released.
+    """
+    params = ModbusTcpParams(host=entry.data[CONF_HOST], port=entry.data[CONF_PORT])
+    unit_ids = sorted(item[CONF_UNIT_ID] for item in entry.data[CONF_INVERTERS])
+    for unit_id in unit_ids[:LAYOUT_CHECK_ATTEMPTS]:
+        async with async_get_temporary_unit(hass, params, unit_id) as unit:
+            inverter = Inverter(unit, unit_id, checks_layout=False)
+            try:
+                await inverter.measurements.async_update()
+            except ModbusTimeoutError:
+                continue
+            reported = effective_limit(inverter.measurements)
+            if reported is None:
+                _LOGGER.warning("Unit %s reports an unreadable power limit", unit_id)
+                return False
+            if reported != NO_LIMIT:
+                await inverter.async_set_export_limit(NO_LIMIT)
+                await inverter.async_set_export_limit_enabled(False)
+                _LOGGER.info("Released the power limit before removing the ECU")
+            return True
+    _LOGGER.warning(
+        "Could not release the power limit on removal: no inverter answered"
+    )
+    return False

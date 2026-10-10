@@ -2,7 +2,7 @@ rules:
   # Bronze
   action-setup:
     status: exempt
-    comment: No actions yet; the export limit action arrives with version 0.3.
+    comment: No custom actions; the power limit is a number entity set with number.set_value.
   appropriate-polling: done
   brands:
     status: exempt
@@ -13,13 +13,13 @@ rules:
   dependency-transparency: done
   docs-actions:
     status: exempt
-    comment: No actions yet.
+    comment: No custom actions; the README documents the power limit number.
   docs-high-level-description: done
   docs-installation-instructions: done
   docs-removal-instructions: done
   entity-event-setup:
     status: exempt
-    comment: Entities only read coordinator data.
+    comment: Entities only read coordinator data; the number writes through the coordinator.
   entity-unique-id: done
   has-entity-name: done
   runtime-data: done
@@ -28,9 +28,7 @@ rules:
   unique-config-entry: done
 
   # Silver
-  action-exceptions:
-    status: exempt
-    comment: No actions yet.
+  action-exceptions: done
   config-entry-unloading: done
   docs-configuration-parameters: done
   docs-installation-parameters: done
@@ -49,9 +47,7 @@ rules:
   discovery: done
   discovery-update-info: done
   docs-data-update: done
-  docs-examples:
-    status: todo
-    comment: Automation examples follow with the export limit in 0.3.
+  docs-examples: done
   docs-known-limitations: done
   docs-supported-devices: done
   docs-supported-functions: done

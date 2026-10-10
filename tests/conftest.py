@@ -22,6 +22,7 @@ from custom_components.apsystems_modbus.const import (
     CONF_UNIT_ID,
     DOMAIN,
 )
+from custom_components.apsystems_modbus.ecu import GRID_CONNECTION_ADDRESS
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
@@ -95,11 +96,38 @@ def mock_shared_connection(
     with (
         patch("custom_components.apsystems_modbus.async_get_unit", get_unit),
         patch(
+            "custom_components.apsystems_modbus.async_get_temporary_unit",
+            get_temporary_unit,
+        ),
+        patch(
             "custom_components.apsystems_modbus.config_flow.async_get_temporary_unit",
             get_temporary_unit,
         ),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def never_write_grid_connection(
+    mock_modbus_connection: MockModbusConnection,
+) -> Generator[None]:
+    """Fail the test if anything even attempts to write the grid connection register."""
+    attempts: list[tuple[int, int]] = []
+
+    def guard(unit: MockModbusUnit) -> None:
+        original = unit.write_register
+
+        async def write_register(address: int, value: int) -> None:
+            if address == GRID_CONNECTION_ADDRESS:
+                attempts.append((unit.unit_id, address))
+            await original(address, value)
+
+        unit.write_register = write_register  # type: ignore[method-assign]
+
+    for unit_id in range(1, 17):
+        guard(mock_modbus_connection.for_unit(unit_id))
+    yield
+    assert attempts == [], f"register 40188 was written: {attempts}"
 
 
 @pytest.fixture

@@ -27,6 +27,7 @@ from .const import (
 )
 from .ecu import Inverter
 from .lifetime import EnergyLedger
+from .power_limit import PowerLimit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ class EcuData:
     """Inverters that are feeding in."""
     last_change: datetime | None = None
     """When the ECU last reported different values."""
+    timeouts: int = 0
+    """Inverters that did not answer this cycle."""
 
 
 class EcuCoordinator(DataUpdateCoordinator[EcuData]):
@@ -95,6 +98,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             for item in entry.data[CONF_INVERTERS]
         }
         """Configured serial number per unit id."""
+        self.power_limit = PowerLimit(self, lead)
+        """The ECU-wide power limit, written and read back through ``lead``."""
         self._timeout_budget = min(MAX_TIMEOUTS_PER_CYCLE, len(inverters))
         self._degraded = False
         self._reported: set[int] = set()
@@ -127,6 +132,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 continue
             data.available.add(unit_id)
 
+        data.timeouts = timeouts
         await self._pace(timeouts)
         if not data.available:
             raise UpdateFailed(
@@ -134,6 +140,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 translation_key="no_inverter_answered",
             )
         self._aggregate(data)
+        # Runs after the loop, so write_lock is free; see power_limit.py.
+        await self.power_limit.async_after_poll(data)
         return data
 
     def _serial_matches(self, unit_id: int, inverter: Inverter) -> bool:

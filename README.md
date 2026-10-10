@@ -1,12 +1,16 @@
 # APsystems Modbus for Home Assistant
 
 Local integration for an APsystems ECU and its microinverters over Modbus TCP.
-One device for the ECU with the system totals, one device per microinverter
-with its own measurements. Local only, no cloud connection.
+One device for the ECU with the system totals and a power limit, one device
+per microinverter with its own measurements.
 
-**Status: 0.2.** Reading and the lifetime counter for the Energy dashboard
-work and are tested against an ECU-R. Export limit control is the next
-milestone.
+Everything happens on your own network, between Home Assistant and the ECU,
+using the SunSpec Modbus interface built into the ECU: no cloud, no account,
+no app in between, and your data never leaves your home.
+
+**Unofficial, use at your own risk.** This project is not made, supported or
+endorsed by APsystems. It can change the power limit of your inverters; read
+the *Power limit* section before you use that.
 
 ## Supported hardware
 
@@ -46,9 +50,10 @@ please open an issue with a register dump made with `tools/dump_registers.py`
    - Reconnect your phone to your normal Wi-Fi afterwards.
 3. Note that with Modbus enabled the ECU is controlled over Modbus. APsystems
    features such as Dynamic Tariff stop working; it is one or the other.
-4. Make sure **nothing else polls the ECU over Modbus** (for example another
-   Home Assistant integration or a script). The ECU is a small device and
-   overloads easily.
+4. Make sure **nothing else talks to the ECU over Modbus** (another Home
+   Assistant integration, a script, a second Modbus client). A second
+   connection makes the ECU drop the first one, and the ECU is a small device
+   that overloads easily.
 5. Home Assistant 2026.10.0 or newer.
 
 ## Installation
@@ -118,9 +123,9 @@ under *Developer tools → Statistics → Lifetime energy*.
 
 ## What you get
 
-**ECU device:** power, energy today, lifetime energy, peak power, inverters
-online, last data update (diagnostic), grid connection (diagnostic, disabled by
-default).
+**ECU device:** power limit (control), power, energy today, lifetime energy,
+peak power, inverters online, last data update (diagnostic), grid connection
+(diagnostic, disabled by default).
 
 **Per inverter:** power, energy today, AC voltage, AC current, frequency,
 temperature, status, event code, DC voltage/current/power per channel, online.
@@ -129,6 +134,79 @@ power, power factor and DC channels the inverter model does not have.
 
 Entity names are English for everyone, so entity IDs are the same in every
 installation. Device names can be changed in Home Assistant.
+
+## Power limit
+
+**Power limit** on the ECU device limits the output of all inverters together,
+in whole percent. 100 means no limit; the inverters then
+deliver whatever the sun gives, and what you do not use yourself goes to the
+grid. Set it by hand or from an automation with `number.set_value`.
+
+- **It takes a few minutes.** The ECU talks to the inverters over Zigbee about
+  every 5 minutes and passes a new limit on in that round; not every inverter
+  gets it in the same round. In tests all inverters followed within 5 to about
+  15 minutes. Plan your automations with that delay in mind.
+- **Watch the power, not the status.** The inverters keep reporting *MPPT*
+  while limited. The scale is not exactly linear at the low end: with 730 W
+  DS3-L inverters, 10 % gave about 65 W and 5 % about 20 W per inverter. 0 % is the lowest setting; how much is
+  left at 0 % has not been measured yet.
+- **The slider shows what the ECU reports.** After you set it, it shows your
+  value right away and the next poll confirms it. If the ECU does not answer,
+  you get an error, the slider stays where it was, and the integration writes
+  your value as soon as the ECU answers again; you do not need to repeat it.
+  The attributes `desired` and `pending` show what is still being applied.
+- **The integration keeps the ECU on your value.** The ECU sometimes reports a
+  wrong limit for one poll; that is ignored. If it keeps reporting another
+  value, your value is written again, at most once every 10 minutes.
+- **After an ECU restart** the ECU may report 30 % without applying it. Set
+  the slider once and it is in sync again.
+- **Nothing reverts on its own.** The ECU has no fallback timer. If Home
+  Assistant stops or restarts, or you reload the integration, the last limit
+  stays in force and the integration only guards it again after you set it.
+  Set the limit to 100 before removing the integration; removing also tries
+  to release it, and tells you if that failed.
+- A write normally takes a few seconds; up to about a minute when the ECU is
+  silent.
+
+Let automations set the slider rather than react to it. Two examples; replace
+the entity id with yours (it follows the device name, for example
+`number.ecu_2160xxxxxxxx_power_limit`). The first one only acts when the price
+crosses zero, so combine it with the second one or add a time trigger if the
+price can stay negative overnight.
+
+```yaml
+# Limit production while the feed-in price is negative, release afterwards.
+automation:
+  - alias: Solar power limit on negative price
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.feed_in_price
+        below: 0
+      - trigger: numeric_state
+        entity_id: sensor.feed_in_price
+        above: 0
+    actions:
+      - action: number.set_value
+        target:
+          entity_id: number.apsystems_ecu_power_limit
+        data:
+          value: "{{ 0 if states('sensor.feed_in_price') | float(0) < 0 else 100 }}"
+```
+
+```yaml
+# Release the limit at sunset.
+automation:
+  - alias: Solar power limit release at sunset
+    triggers:
+      - trigger: sun
+        event: sunset
+    actions:
+      - action: number.set_value
+        target:
+          entity_id: number.apsystems_ecu_power_limit
+        data:
+          value: 100
+```
 
 ## Behaviour and limitations
 
@@ -146,7 +224,9 @@ installation. Device names can be changed in Home Assistant.
 - Daily totals can differ about 1 % from what EMA shows.
 - Not available over Modbus: ECU firmware version, Zigbee signal strength, ECU
   restart.
-- The grid connection register is never written by this integration.
+- The power limit is written through one inverter address; the ECU applies it
+  to all inverters. The grid connection register is never written by this
+  integration.
 
 ## Troubleshooting
 
@@ -173,9 +253,20 @@ JSON file with the raw registers. Replace the serial numbers before sharing.
 
 ## Removing the integration
 
-Delete the integration under *Settings → Devices & services*. Its devices and
-entities are removed with it. Only the lifetime total and peak power stay in a
-small file in `.storage`, so they can continue when you add the same ECU again.
+Set the power limit to 100 first. Then delete the integration under
+*Settings → Devices & services*. Its devices and entities are removed with it;
+if a limit is still active, the integration tries to release it and shows a
+notification when that is not possible. Only the lifetime total and peak power
+stay in a small file in `.storage`, so they can continue when you add the same
+ECU again.
+
+## Disclaimer
+
+This software is provided "as is", without warranty of any kind, as stated in
+the Apache-2.0 license. You use it at your own risk; the author is not liable
+for any loss of production, damage or other consequences of using it,
+including changes made to your ECU or inverters. APsystems is a trademark of
+its owner; this project is not affiliated with APsystems.
 
 ## License
 

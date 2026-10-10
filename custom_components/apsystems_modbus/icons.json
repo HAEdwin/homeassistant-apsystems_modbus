@@ -18,6 +18,11 @@
       "grid_connection": {
         "default": "mdi:transmission-tower"
       }
+    },
+    "number": {
+      "power_limit": {
+        "default": "mdi:car-speed-limiter"
+      }
     }
   }
 }

@@ -31,3 +31,11 @@ async def test_diagnostics_are_redacted(
     assert diagnostics["coordinator"]["available"] == [1, 2]
     assert diagnostics["inverters"]["1"]["measurements"]["ac_power"] == 204.0
     assert diagnostics["inverters"]["1"]["identity"]["model"] == "DS3"
+    assert diagnostics["power_limit"] == {
+        "control_unit": 1,
+        "desired": None,
+        "pending": False,
+        "shown": 100,
+        "deviations": 0,
+        "last_rewrite": None,
+    }

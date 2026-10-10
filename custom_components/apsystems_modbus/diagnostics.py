@@ -48,6 +48,16 @@ async def async_get_config_entry_diagnostics(
             if data and data.last_change
             else None,
         },
+        "power_limit": {
+            "control_unit": coordinator.power_limit.control.unit_id,
+            "desired": coordinator.power_limit.desired,
+            "pending": coordinator.power_limit.pending,
+            "shown": coordinator.power_limit.shown,
+            "deviations": coordinator.power_limit.deviations,
+            "last_rewrite": coordinator.power_limit.last_rewrite.isoformat()
+            if coordinator.power_limit.last_rewrite
+            else None,
+        },
         "lifetime": {
             "lifetime_energy_wh": coordinator.ledger.lifetime,
             "peak_power_w": coordinator.ledger.peak_power,
