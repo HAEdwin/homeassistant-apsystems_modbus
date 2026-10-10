@@ -147,20 +147,20 @@ def _is_refused(err: BaseException) -> bool:
     return False
 
 
-async def _marker(unit: ModbusUnit, attempts: int = ATTEMPTS) -> str | None:
+async def _marker(unit: ModbusUnit) -> str | None:
     """Return the text at 40000-40001, or ``None`` if the address stays silent.
 
     An address without an inverter never answers on the ECU; a SunSpec device
     answers ``"SunS"``.
     """
-    for attempt in range(attempts):
+    for attempt in range(ATTEMPTS):
         try:
             values = await unit.read_holding_registers(40000, 2)
             break
         except ModbusExceptionError:
             return None
         except ModbusTimeoutError:
-            if attempt == attempts - 1:
+            if attempt == ATTEMPTS - 1:
                 return None
             _LOGGER.debug("No answer on 40000, trying once more")
     return b"".join(value.to_bytes(2, "big") for value in values).decode(
@@ -178,16 +178,40 @@ async def _patiently[T](read: Callable[[], Awaitable[T]], what: str) -> T:
     return await read()
 
 
-async def _read_identity(unit: ModbusUnit, unit_id: int) -> FoundInverter:
-    """Read model 1 of one unit and check the layout."""
-    identity = Identity(unit)
-    await _patiently(identity.async_update, f"Unit {unit_id}")
+def _as_found(identity: Identity, unit_id: int) -> FoundInverter:
+    """Check the layout of an identity read and turn it into a found inverter."""
     identity.check_layout()
     return FoundInverter(
         unit_id=unit_id,
         serial_number=identity.serial_number or "",
         model=identity.model or "",
     )
+
+
+async def _read_identity(unit: ModbusUnit, unit_id: int) -> FoundInverter:
+    """Read model 1 of an address the user gave, patiently."""
+    identity = Identity(unit)
+    await _patiently(identity.async_update, f"Unit {unit_id}")
+    return _as_found(identity, unit_id)
+
+
+async def _try_identity(unit: ModbusUnit, attempts: int) -> Identity | None:
+    """Read model 1 of an address that may be empty; ``None`` if it stays silent.
+
+    One read both tells whether an inverter is there and what it is.
+    """
+    identity = Identity(unit)
+    for attempt in range(attempts):
+        try:
+            await identity.async_update()
+        except ModbusExceptionError:
+            return None
+        except ModbusTimeoutError:
+            if attempt < attempts - 1:
+                _LOGGER.debug("No answer, trying once more")
+            continue
+        return identity
+    return None
 
 
 class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -381,7 +405,6 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_probe(self) -> list[FoundInverter]:
         """Search the given or default addresses and read each inverter's identity."""
         params = ModbusTcpParams(host=self._host, port=self._port)
-        found: list[FoundInverter] = []
         try:
             # Hold the first address for the whole search so the connection
             # stays open; the other addresses share it.
@@ -392,35 +415,12 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
                 anchor.require_timeout(PROBE_TIMEOUT)
                 if self._unit_ids is None:
-                    unit_ids = await self._scan(stack, params, anchor, first)
+                    answered = await self._scan(stack, params, anchor, first)
                 else:
-                    unit_ids = self._unit_ids
-                silent = 0
-                first_found: ModbusUnit | None = None
-                for unit_id in unit_ids:
-                    unit = (
-                        anchor
-                        if unit_id == first
-                        else await stack.enter_async_context(
-                            async_get_temporary_unit(self.hass, params, unit_id)
-                        )
-                    )
-                    try:
-                        found.append(await _read_identity(unit, unit_id))
-                        first_found = first_found or unit
-                    except ModbusTimeoutError:
-                        _LOGGER.debug(
-                            "Unit %s: no answer to the identity read", unit_id
-                        )
-                        if found:
-                            raise ProbeError("ecu_busy") from None
-                        silent += 1
-                        if silent >= SCAN_STOP_AFTER_MISSES:
-                            # Do not wait out a long list on a silent ECU.
-                            raise ProbeError("no_inverters") from None
-                if first_found is not None:
+                    answered = await self._read_listed(stack, params, anchor, first)
+                if answered:
                     # All units share one layout: check the controls block once.
-                    unit = first_found
+                    unit = answered[0][1]
                     await _patiently(
                         lambda: async_check_controls(unit), "Controls block"
                     )
@@ -434,9 +434,50 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         except ModbusTimeoutError as err:
             _LOGGER.debug("Search stopped: no answer from the ECU")
             raise ProbeError("cannot_connect") from err
-        if not found:
+        if not answered:
             raise ProbeError("no_inverters")
-        return found
+        return [item for item, _ in answered]
+
+    async def _unit(
+        self,
+        stack: AsyncExitStack,
+        params: ModbusTcpParams,
+        anchor: ModbusUnit,
+        first: int,
+        unit_id: int,
+    ) -> ModbusUnit:
+        """Return the unit for an address; the first one is the anchor."""
+        if unit_id == first:
+            return anchor
+        unit = await stack.enter_async_context(
+            async_get_temporary_unit(self.hass, params, unit_id)
+        )
+        unit.require_timeout(PROBE_TIMEOUT)
+        return unit
+
+    async def _read_listed(
+        self,
+        stack: AsyncExitStack,
+        params: ModbusTcpParams,
+        anchor: ModbusUnit,
+        first: int,
+    ) -> list[tuple[FoundInverter, ModbusUnit]]:
+        """Read the identity of each address the user gave."""
+        answered: list[tuple[FoundInverter, ModbusUnit]] = []
+        silent = 0
+        for unit_id in self._unit_ids or [first]:
+            unit = await self._unit(stack, params, anchor, first, unit_id)
+            try:
+                answered.append((await _read_identity(unit, unit_id), unit))
+            except ModbusTimeoutError:
+                _LOGGER.debug("Unit %s: no answer to the identity read", unit_id)
+                if answered:
+                    raise ProbeError("ecu_busy") from None
+                silent += 1
+                if silent >= SCAN_STOP_AFTER_MISSES:
+                    # Do not wait out a long list on a silent ECU.
+                    raise ProbeError("no_inverters") from None
+        return answered
 
     async def _scan(
         self,
@@ -444,45 +485,44 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         params: ModbusTcpParams,
         anchor: ModbusUnit,
         first: int,
-    ) -> list[int]:
+    ) -> list[tuple[FoundInverter, ModbusUnit]]:
         """Walk the addresses from 1 until two in a row stay silent.
 
-        The first silent address after an answer gets two tries, so a slow
-        inverter is not missed; the next one gets one try, which keeps the end
-        of the search short. Silent addresses between inverters are tried once
-        more when a later address answers.
+        Each address gets one identity read, which both finds an inverter and
+        tells what it is. The first silent address after an answer gets two
+        tries, so a slow inverter is not missed; the next one gets one try,
+        which keeps the end of the search short. Silent addresses between
+        inverters are tried once more when a later address answers.
         """
-        unit_ids: list[int] = []
+        answered: dict[int, tuple[FoundInverter, ModbusUnit]] = {}
         silent: dict[int, ModbusUnit] = {}
         for unit_id in range(first, SCAN_LIMIT + 1):
-            unit = (
-                anchor
-                if unit_id == first
-                else await stack.enter_async_context(
-                    async_get_temporary_unit(self.hass, params, unit_id)
-                )
+            unit = await self._unit(stack, params, anchor, first, unit_id)
+            identity = await _try_identity(unit, attempts=1 if silent else ATTEMPTS)
+            _LOGGER.debug(
+                "Address %s: %s",
+                unit_id,
+                identity.marker if identity is not None else "no answer",
             )
-            unit.require_timeout(PROBE_TIMEOUT)
-            marker = await _marker(unit, attempts=1 if silent else ATTEMPTS)
-            _LOGGER.debug("Address %s: %s", unit_id, marker or "no answer")
-            if marker == SUNSPEC_MARKER:
+            if identity is not None and identity.marker == SUNSPEC_MARKER:
                 for gap_id, gap_unit in silent.items():
-                    if await _marker(gap_unit, attempts=1) == SUNSPEC_MARKER:
-                        unit_ids.append(gap_id)
+                    gap = await _try_identity(gap_unit, attempts=1)
+                    if gap is not None and gap.marker == SUNSPEC_MARKER:
+                        answered[gap_id] = (_as_found(gap, gap_id), gap_unit)
                 silent.clear()
-                unit_ids.append(unit_id)
+                answered[unit_id] = (_as_found(identity, unit_id), unit)
                 continue
-            if marker is not None and not unit_ids:
+            if identity is not None and not answered:
                 # Something answers, but it is not a SunSpec device.
                 raise ProbeError("not_apsystems")
             silent[unit_id] = unit
             if len(silent) >= SCAN_STOP_AFTER_MISSES:
-                if not unit_ids:
+                if not answered:
                     # Nothing on the first addresses: the ECU is reachable but
                     # no inverter has an address yet.
                     raise ProbeError("no_inverters")
                 break
-        return sorted(unit_ids)
+        return [answered[unit_id] for unit_id in sorted(answered)]
 
     # ---- confirmation ----------------------------------------------------
 

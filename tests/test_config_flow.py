@@ -157,7 +157,9 @@ async def test_ecu_busy_during_search(
     mock_ecu.for_unit(2).fail_read(40004, ModbusTimeoutError())
     result = await start_user_flow(hass)
 
-    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    result = await submit_and_wait(
+        hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-2"}
+    )
     assert result["errors"] == {"base": "ecu_busy"}
 
 
@@ -376,7 +378,9 @@ async def test_reopened_form_keeps_connection(
 ) -> None:
     mock_ecu.for_unit(2).fail_read(40004, ModbusTimeoutError())
     result = await start_user_flow(hass)
-    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    result = await submit_and_wait(
+        hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-2"}
+    )
     assert result["errors"] == {"base": "ecu_busy"}
 
     # Reopening the dialog re-runs the step without input.
@@ -393,18 +397,20 @@ async def test_dhcp_failure_returns_to_discovery_screen(
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_DHCP}, data=DISCOVERY
     )
-    mock_ecu.for_unit(2).fail_read(40004, ModbusTimeoutError())
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
 
     result = await submit_and_wait(hass, result["flow_id"], {})
     assert result["step_id"] == "dhcp_confirm"
-    assert result["errors"] == {"base": "ecu_busy"}
+    assert result["errors"] == {"base": "no_inverters"}
 
     # Reopening the dialog shows the discovery screen again, not the manual form.
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
     assert result["step_id"] == "dhcp_confirm"
 
     # Confirming again runs the automatic search again.
-    mock_ecu.for_unit(2).fail_read(40004, None)
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(None)
     result = await submit_and_wait(hass, result["flow_id"], {})
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "2"
@@ -680,3 +686,27 @@ async def test_slow_identity_gets_three_tries(
     )
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "2"
+
+
+async def test_search_reads_each_address_once(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["description_placeholders"]["count"] == "2"
+
+    # One read finds the inverter and tells what it is.
+    reads_2 = [e.address for e in mock_ecu.for_unit(2).read_events]
+    assert reads_2 == [40000]
+
+
+async def test_silent_inverter_during_search_is_left_out(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    # An address that keeps timing out is an empty address to the search.
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    result = await start_user_flow(hass)
+
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["step_id"] == "confirm"
+    assert result["description_placeholders"]["count"] == "1"
