@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run the same checks as pre-commit and CI.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/mypy

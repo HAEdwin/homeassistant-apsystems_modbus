@@ -1,0 +1,84 @@
+rules:
+  # Bronze
+  action-setup:
+    status: exempt
+    comment: No actions yet; the export limit action arrives with version 0.3.
+  appropriate-polling: done
+  brands:
+    status: todo
+    comment: Icon to be submitted to home-assistant/brands.
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage: done
+  dependency-transparency: done
+  docs-actions:
+    status: exempt
+    comment: No actions yet.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  entity-event-setup:
+    status: exempt
+    comment: Entities only read coordinator data.
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions:
+    status: exempt
+    comment: No actions yet.
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: The ECU has no credentials.
+  test-coverage: done
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery: done
+  discovery-update-info: done
+  docs-data-update: done
+  docs-examples:
+    status: todo
+    comment: Automation examples follow with the export limit in 0.3.
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases:
+    status: todo
+    comment: Follows with the Energy dashboard section in 0.2.
+  dynamic-devices:
+    status: exempt
+    comment: Inverters are fixed by the addresses set in EMA Manager; change them via reconfigure.
+  entity-category: done
+  entity-device-class: done
+  entity-disabled-by-default: done
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow: done
+  repair-issues:
+    status: exempt
+    comment: Problems are reported through entity availability and the log.
+  stale-devices:
+    status: todo
+    comment: Devices of inverters removed via reconfigure are not yet cleaned up automatically.
+
+  # Platinum
+  async-dependency: done
+  inject-websession:
+    status: exempt
+    comment: Modbus TCP, no HTTP session.
+  strict-typing: done

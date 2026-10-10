@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Start a local Home Assistant with this integration for manual testing.
+# Open http://localhost:8123 afterwards. The config/ directory is used as
+# the Home Assistant configuration directory.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
+.venv/bin/hass --config config --debug

@@ -1,0 +1,71 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+extend-exclude = ["config"]
+
+[tool.ruff.lint]
+select = [
+    "A",    # shadowed builtins
+    "ANN",  # type annotations
+    "ASYNC",
+    "B",    # likely bugs
+    "C4",   # comprehensions
+    "D",    # docstrings
+    "E", "W",
+    "F",
+    "I",    # import order
+    "ICN",
+    "ISC",
+    "LOG",
+    "N",    # naming
+    "PIE",
+    "PL",   # pylint
+    "PT",   # pytest style
+    "RET",
+    "RUF",
+    "S",    # security
+    "SIM",
+    "T20",  # no print
+    "TRY",
+    "UP",   # modern syntax
+]
+ignore = [
+    "D203", "D213",  # conflicting docstring styles; keep D211/D212
+    "E501",          # line length is handled by the formatter
+    "PLR2004",       # magic numbers are register addresses here
+    "TRY003",        # long exception messages are fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "PLR0913", "ANN", "D"]
+"tools/*" = ["T20", "PLR0912", "PLR0915"]  # a standalone script with one long main
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+combine-as-imports = true
+known-first-party = ["custom_components.apsystems_modbus"]
+section-order = ["future", "standard-library", "third-party", "homeassistant", "first-party", "local-folder"]
+
+[tool.ruff.lint.isort.sections]
+homeassistant = ["homeassistant", "pytest_homeassistant_custom_component"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+files = ["custom_components/apsystems_modbus"]
+
+[[tool.mypy.overrides]]
+module = ["homeassistant.*", "modbus_connection.*"]
+follow_untyped_imports = true
+# Home Assistant re-exports platform classes from package __init__ modules.
+implicit_reexport = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider --cov=custom_components/apsystems_modbus --cov-report=term-missing"

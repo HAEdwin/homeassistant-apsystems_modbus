@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Create the virtual environment and install the development dependencies.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if ! command -v uv >/dev/null; then
+    echo "uv is required: https://docs.astral.sh/uv/" >&2
+    exit 1
+fi
+
+uv venv --python 3.14 .venv
+uv pip install --python .venv/bin/python -r requirements_dev.txt
+.venv/bin/pre-commit install
+echo "Done. Run scripts/test, scripts/lint or scripts/develop."

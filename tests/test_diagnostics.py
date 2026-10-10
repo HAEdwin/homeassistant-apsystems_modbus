@@ -1,0 +1,33 @@
+"""Tests for the diagnostics download."""
+
+from __future__ import annotations
+
+import json
+
+from modbus_connection.mock import MockModbusConnection
+
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.apsystems_modbus.diagnostics import (
+    async_get_config_entry_diagnostics,
+)
+
+
+async def test_diagnostics_are_redacted(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+    text = json.dumps(diagnostics, default=str)
+
+    assert "192.0.2.10" not in text
+    assert "704000000001" not in text
+    assert diagnostics["coordinator"]["available"] == [1, 2]
+    assert diagnostics["inverters"]["1"]["measurements"]["ac_power"] == 204.0
+    assert diagnostics["inverters"]["1"]["identity"]["model"] == "DS3"

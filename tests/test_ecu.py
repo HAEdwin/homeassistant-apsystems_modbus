@@ -1,0 +1,179 @@
+"""Tests for the register model, against the mock ECU."""
+
+from __future__ import annotations
+
+from modbus_connection import ModbusTimeoutError
+from modbus_connection.mock import MockModbusConnection, WriteEvent
+import pytest
+
+from custom_components.apsystems_modbus.ecu import (
+    GRID_CONNECTION_ADDRESS,
+    Inverter,
+    InverterEvent,
+    OperatingState,
+    UnsupportedLayoutError,
+    channel_count,
+)
+
+from .conftest import set_float32
+
+
+async def test_identity(mock_ecu: MockModbusConnection) -> None:
+    inverter = Inverter(mock_ecu.for_unit(1), 1)
+    await inverter.async_ensure_setup()
+
+    assert inverter.identity.manufacturer == "APsystems"
+    assert inverter.identity.model == "DS3"
+    assert inverter.identity.serial_number == "704000000001"
+    assert inverter.identity.unit_id == 1
+    assert inverter.channel_count == 2
+
+
+async def test_measurements_by_day(mock_ecu: MockModbusConnection) -> None:
+    inverter = Inverter(mock_ecu.for_unit(1), 1)
+    report = await inverter.async_poll(Inverter.POLLED)
+
+    assert report.complete
+    m = inverter.measurements
+    assert m.ac_power == 204.0
+    assert m.ac_voltage == 228.0
+    assert m.ac_current == pytest.approx(1.45)
+    assert m.frequency == pytest.approx(49.98)
+    assert m.energy_today == pytest.approx(554.08, abs=0.01)
+    assert m.temperature == 24.0
+    assert m.is_online is True
+    assert m.dc_voltage(1) == pytest.approx(34.01, abs=0.01)
+    assert m.dc_current(2) == pytest.approx(3.381, abs=0.001)
+    assert m.dc_power(1) == pytest.approx(111.8, abs=0.1)
+    assert m.dc_voltage(3) == 0.0
+    assert inverter.status.operating_state is OperatingState.MPPT
+    assert inverter.status.events == InverterEvent(0)
+
+
+async def test_controls_block_read(mock_ecu: MockModbusConnection) -> None:
+    inverter = Inverter(mock_ecu.for_unit(2), 2)
+    await inverter.async_poll(Inverter.POLLED)
+
+    m = inverter.measurements
+    assert m.export_limit == 100.0
+    assert m.export_limit_enabled is False
+    assert m.grid_connected is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(ord("1"), True), (ord("0"), False), (1, True), (0, False), (7, None)],
+)
+async def test_enable_flag_decoding(
+    mock_ecu: MockModbusConnection, raw: int, expected: bool | None
+) -> None:
+    mock_ecu.for_unit(1).holding[40193] = raw
+    inverter = Inverter(mock_ecu.for_unit(1), 1)
+    await inverter.async_poll(("measurements",))
+
+    assert inverter.measurements.export_limit_enabled is expected
+
+
+async def test_offline_inverter(mock_ecu: MockModbusConnection) -> None:
+    unit = mock_ecu.for_unit(1)
+    set_float32(unit, 40144, 0.0)  # power
+    set_float32(unit, 40146, 0.0)  # frequency
+    inverter = Inverter(unit, 1)
+    await inverter.async_poll(("measurements",))
+
+    assert inverter.measurements.is_online is False
+    # The daily counter keeps its value while the inverter is offline.
+    assert inverter.measurements.energy_today == pytest.approx(554.08, abs=0.01)
+
+
+async def test_stray_zero_frequency_still_online(
+    mock_ecu: MockModbusConnection,
+) -> None:
+    unit = mock_ecu.for_unit(1)
+    set_float32(unit, 40146, 0.0)
+    inverter = Inverter(unit, 1)
+    await inverter.async_poll(("measurements",))
+
+    assert inverter.measurements.is_online is True
+
+
+async def test_poll_uses_two_reads(mock_ecu: MockModbusConnection) -> None:
+    unit = mock_ecu.for_unit(1)
+    inverter = Inverter(unit, 1)
+    await inverter.async_ensure_setup()
+    unit.read_events.clear()
+
+    await inverter.async_poll(Inverter.POLLED)
+
+    spans = sorted((event.address, event.count) for event in unit.read_events)
+    assert spans == [(40108, 4), (40124, 114)]
+
+
+async def test_unsupported_layout(mock_ecu: MockModbusConnection) -> None:
+    unit = mock_ecu.for_unit(1)
+    unit.holding[40070] = 103  # a three-phase model instead of 101
+    inverter = Inverter(unit, 1)
+
+    with pytest.raises(UnsupportedLayoutError, match="40070"):
+        await inverter.async_ensure_setup()
+
+
+async def test_timeout_propagates(mock_ecu: MockModbusConnection) -> None:
+    unit = mock_ecu.for_unit(1)
+    inverter = Inverter(unit, 1)
+    await inverter.async_ensure_setup()
+    unit.fail_requests(ModbusTimeoutError())
+
+    with pytest.raises(ModbusTimeoutError):
+        await inverter.async_poll(Inverter.POLLED)
+
+
+async def test_partial_poll(mock_ecu: MockModbusConnection) -> None:
+    unit = mock_ecu.for_unit(1)
+    inverter = Inverter(unit, 1)
+    await inverter.async_ensure_setup()
+    unit.fail_read(40108, ModbusTimeoutError())
+
+    report = await inverter.async_poll(Inverter.POLLED)
+
+    assert report.updated == {"measurements"}
+    assert set(report.failed) == {"status"}
+
+
+async def test_write_export_limit(mock_ecu: MockModbusConnection) -> None:
+    unit = mock_ecu.for_unit(1)
+    writes: list[WriteEvent] = []
+    unit.on_write(writes.append)
+    inverter = Inverter(unit, 1)
+    await inverter.async_poll(("measurements",))
+
+    await inverter.async_set_export_limit(10)
+    await inverter.async_set_export_limit_enabled(True)
+
+    assert [(w.address, list(w.values)) for w in writes] == [
+        (40189, [100]),
+        (40193, [1]),
+    ]
+    assert all(w.address != GRID_CONNECTION_ADDRESS for w in writes)
+    await inverter.async_poll(("measurements",))
+    assert inverter.measurements.export_limit == 10.0
+    assert inverter.measurements.export_limit_enabled is True
+
+
+@pytest.mark.parametrize("percent", [-1, 101])
+async def test_write_export_limit_out_of_range(
+    mock_ecu: MockModbusConnection, percent: int
+) -> None:
+    inverter = Inverter(mock_ecu.for_unit(1), 1)
+    await inverter.async_poll(("measurements",))
+
+    with pytest.raises(ValueError, match="0-100"):
+        await inverter.async_set_export_limit(percent)
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("DS3", 2), ("DS3-L", 2), ("YC600", 2), ("QT2", 4), ("DS3D", 4), (None, 2)],
+)
+def test_channel_count(model: str | None, expected: int) -> None:
+    assert channel_count(model) == expected

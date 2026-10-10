@@ -1,0 +1,533 @@
+"""Config flow: find the ECU, find its inverters, confirm."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Mapping
+from contextlib import AsyncExitStack
+from dataclasses import dataclass
+import logging
+import re
+from typing import Any
+
+from modbus_connection import (
+    ModbusConnectionError,
+    ModbusError,
+    ModbusExceptionError,
+    ModbusTcpParams,
+    ModbusTimeoutError,
+    ModbusUnit,
+)
+import probatio
+
+from homeassistant.components.modbus import async_get_temporary_unit
+from homeassistant.config_entries import (
+    SOURCE_DHCP,
+    SOURCE_RECONFIGURE,
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
+from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT, CONF_SCAN_INTERVAL
+from homeassistant.core import callback
+from homeassistant.helpers import config_validation as cv, selector
+from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+
+from .const import (
+    CONF_ECU_ID,
+    CONF_INVERTERS,
+    CONF_MODEL,
+    CONF_SERIAL_NUMBER,
+    CONF_UNIT_ID,
+    CONF_UNIT_IDS,
+    DEFAULT_PORT,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    MAX_SCAN_INTERVAL,
+    MIN_SCAN_INTERVAL,
+)
+from .ecu import REQUEST_TIMEOUT, SUNSPEC_MARKER, Identity, UnsupportedLayoutError
+
+_LOGGER = logging.getLogger(__name__)
+
+PROBE_TIMEOUT = 5.0
+"""Seconds to wait while searching; an address without an inverter never answers."""
+ATTEMPTS = 2
+"""Reads during setup are tried twice: the ECU is slow while it polls its inverters."""
+SCAN_START = 1
+SCAN_LIMIT = 32
+SCAN_STOP_AFTER_MISSES = 2
+MIN_UNIT_ID = 1
+MAX_UNIT_ID = 247
+
+_RANGE = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d+))?\s*$")
+
+
+@dataclass(frozen=True)
+class FoundInverter:
+    """An inverter answering on one Modbus address."""
+
+    unit_id: int
+    serial_number: str
+    model: str
+
+    def as_config(self) -> dict[str, Any]:
+        """Return the shape stored in the config entry."""
+        return {
+            CONF_UNIT_ID: self.unit_id,
+            CONF_SERIAL_NUMBER: self.serial_number,
+            CONF_MODEL: self.model,
+        }
+
+
+class ProbeError(Exception):
+    """The ECU could not be set up; ``reason`` is a translated error key."""
+
+    def __init__(self, reason: str, details: str = "") -> None:
+        """Remember why probing failed."""
+        super().__init__(reason)
+        self.reason = reason
+        self.details = details
+
+
+def parse_unit_ids(text: str) -> list[int]:
+    """Turn ``1-8`` or ``1, 2, 5`` into a sorted list of unit ids."""
+    unit_ids: set[int] = set()
+    for part in text.split(","):
+        match = _RANGE.match(part)
+        if not match:
+            raise ValueError(part)
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if not MIN_UNIT_ID <= start <= end <= MAX_UNIT_ID:
+            raise ValueError(part)
+        unit_ids.update(range(start, end + 1))
+    if not unit_ids:
+        raise ValueError(text)
+    return sorted(unit_ids)
+
+
+def _is_refused(err: BaseException) -> bool:
+    """Whether a connection error was an active refusal (Modbus switched off)."""
+    cause: BaseException | None = err
+    while cause is not None:
+        if isinstance(cause, ConnectionRefusedError) or "refused" in str(cause).lower():
+            return True
+        cause = cause.__cause__ or cause.__context__
+    return False
+
+
+async def _marker(unit: ModbusUnit) -> str | None:
+    """Return the text at 40000-40001, or ``None`` if the address stays silent.
+
+    An address without an inverter never answers on the ECU; a SunSpec device
+    answers ``"SunS"``.
+    """
+    for attempt in range(ATTEMPTS):
+        try:
+            values = await unit.read_holding_registers(40000, 2)
+            break
+        except ModbusExceptionError:
+            return None
+        except ModbusTimeoutError:
+            if attempt == ATTEMPTS - 1:
+                return None
+            _LOGGER.debug("No answer on 40000, trying once more")
+    return b"".join(value.to_bytes(2, "big") for value in values).decode(
+        "ascii", errors="replace"
+    )
+
+
+async def _read_identity(unit: ModbusUnit, unit_id: int) -> FoundInverter:
+    """Read model 1 of one unit and check the layout."""
+    identity = Identity(unit)
+    for attempt in range(ATTEMPTS):
+        try:
+            await identity.async_update()
+            break
+        except ModbusTimeoutError:
+            if attempt == ATTEMPTS - 1:
+                raise
+            _LOGGER.debug("Unit %s: identity read timed out, trying once more", unit_id)
+    identity.check_layout()
+    return FoundInverter(
+        unit_id=unit_id,
+        serial_number=identity.serial_number or "",
+        model=identity.model or "",
+    )
+
+
+class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Two screens: connection, then confirmation of what was found."""
+
+    VERSION = 1
+
+    def __init__(self) -> None:
+        """Start with nothing known."""
+        self._host = ""
+        self._port = DEFAULT_PORT
+        self._unit_ids: list[int] | None = None
+        self._mac: str | None = None
+        self._found: list[FoundInverter] = []
+        self._probe_task: asyncio.Task[list[FoundInverter]] | None = None
+        self._probe_error: str | None = None
+        self._show_confirm = False
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the options flow."""
+        return OptionsFlow()
+
+    # ---- entry points ----------------------------------------------------
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for the connection details."""
+        errors: dict[str, str] = {}
+        if user_input is not None and self._take_connection_input(user_input, errors):
+            self._async_abort_entries_match(
+                {CONF_HOST: self._host, CONF_PORT: self._port}
+            )
+            return await self.async_step_scan()
+        return self.async_show_form(
+            step_id="user",
+            # Home Assistant re-runs this step without input when the dialog is
+            # reopened, so fall back to what is already known.
+            data_schema=self._connection_schema(user_input or self._known_connection()),
+            errors=errors,
+        )
+
+    async def async_step_dhcp(
+        self, discovery_info: DhcpServiceInfo
+    ) -> ConfigFlowResult:
+        """Offer an ECU that appeared on the network, once it proves to be one."""
+        mac = format_mac(discovery_info.macaddress)
+        for entry in self._async_current_entries(include_ignore=True):
+            if (
+                entry.data.get(CONF_MAC) == mac
+                or entry.data.get(CONF_HOST) == discovery_info.ip
+            ):
+                if entry.data.get(CONF_HOST) != discovery_info.ip:
+                    self.hass.config_entries.async_update_entry(
+                        entry, data={**entry.data, CONF_HOST: discovery_info.ip}
+                    )
+                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                return self.async_abort(reason="already_configured")
+        await self.async_set_unique_id(mac)
+        self._abort_if_unique_id_configured()
+
+        self._host = discovery_info.ip
+        self._mac = mac
+        params = ModbusTcpParams(host=self._host, port=self._port)
+        try:
+            async with async_get_temporary_unit(self.hass, params, SCAN_START) as unit:
+                unit.require_timeout(PROBE_TIMEOUT)
+                marker = await _marker(unit)
+        except ModbusError:
+            return self.async_abort(reason="cannot_connect")
+        if marker is None:
+            return self.async_abort(reason="cannot_connect")
+        if marker != SUNSPEC_MARKER:
+            return self.async_abort(reason="not_apsystems")
+
+        self.context["title_placeholders"] = {CONF_HOST: self._host}
+        return await self.async_step_dhcp_confirm()
+
+    async def async_step_dhcp_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user accept the discovered ECU before anything is searched."""
+        if user_input is not None:
+            return await self.async_step_scan()
+        return self.async_show_form(
+            step_id="dhcp_confirm",
+            description_placeholders={CONF_HOST: self._host},
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change host, port or addresses of an existing entry."""
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if self._take_connection_input(user_input, errors):
+                return await self.async_step_scan()
+            current: Mapping[str, Any] = user_input
+        else:
+            current = {
+                CONF_HOST: entry.data[CONF_HOST],
+                CONF_PORT: entry.data[CONF_PORT],
+                CONF_UNIT_IDS: ", ".join(
+                    str(item[CONF_UNIT_ID]) for item in entry.data[CONF_INVERTERS]
+                ),
+            }
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self._connection_schema(current),
+            errors=errors,
+        )
+
+    def _take_connection_input(
+        self, user_input: Mapping[str, Any], errors: dict[str, str]
+    ) -> bool:
+        """Store the connection form; ``False`` with an error if it is invalid."""
+        self._host = user_input[CONF_HOST].strip()
+        self._port = user_input[CONF_PORT]
+        text = user_input.get(CONF_UNIT_IDS, "").strip()
+        try:
+            self._unit_ids = parse_unit_ids(text) if text else None
+        except ValueError:
+            errors[CONF_UNIT_IDS] = "invalid_unit_ids"
+            return False
+        return True
+
+    # ---- probing ---------------------------------------------------------
+
+    async def async_step_scan(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Find the inverters while showing progress, then move on."""
+        if self._probe_task is None:
+            self._probe_error = None
+            self._probe_task = self.hass.async_create_task(self._async_probe())
+        if not self._probe_task.done():
+            return self.async_show_progress(
+                step_id="scan",
+                progress_action="scan",
+                progress_task=self._probe_task,
+            )
+        try:
+            self._found = self._probe_task.result()
+        except ProbeError as err:
+            self._probe_error = err.reason
+        except Exception:
+            _LOGGER.exception("Unexpected error while searching for inverters")
+            self._probe_error = "unknown"
+        finally:
+            self._probe_task = None
+        if self._probe_error:
+            return self.async_show_progress_done(next_step_id="retry")
+        # Home Assistant re-sends the previous step's input to the next step
+        # after progress; the confirm form must be shown first regardless.
+        self._show_confirm = True
+        return self.async_show_progress_done(next_step_id="confirm")
+
+    async def async_step_retry(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show why probing failed on the screen the search started from."""
+        errors = {"base": self._probe_error or "unknown"}
+        self._probe_error = None
+        if self.source == SOURCE_DHCP:
+            # A discovered ECU retries the automatic path, not the manual form.
+            return self.async_show_form(
+                step_id="dhcp_confirm",
+                description_placeholders={CONF_HOST: self._host},
+                errors=errors,
+            )
+        step_id = "reconfigure" if self.source == SOURCE_RECONFIGURE else "user"
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=self._connection_schema(self._known_connection()),
+            errors=errors,
+        )
+
+    def _known_connection(self) -> dict[str, Any]:
+        """Return the connection details entered or discovered so far."""
+        return {
+            CONF_HOST: self._host,
+            CONF_PORT: self._port,
+            CONF_UNIT_IDS: ", ".join(str(unit_id) for unit_id in self._unit_ids or []),
+        }
+
+    async def _async_probe(self) -> list[FoundInverter]:
+        """Search the given or default addresses and read each inverter's identity."""
+        params = ModbusTcpParams(host=self._host, port=self._port)
+        found: list[FoundInverter] = []
+        try:
+            # Hold the first address for the whole search so the connection
+            # stays open; the other addresses share it.
+            async with AsyncExitStack() as stack:
+                first = (self._unit_ids or [SCAN_START])[0]
+                anchor = await stack.enter_async_context(
+                    async_get_temporary_unit(self.hass, params, first)
+                )
+                anchor.require_timeout(PROBE_TIMEOUT)
+                if self._unit_ids is None:
+                    unit_ids = await self._scan(stack, params, anchor, first)
+                else:
+                    unit_ids = self._unit_ids
+                # These addresses answered or were given by the user: allow the
+                # same patience as normal polling. The link uses the longest
+                # timeout any unit asks for.
+                anchor.require_timeout(REQUEST_TIMEOUT)
+                for unit_id in unit_ids:
+                    unit = (
+                        anchor
+                        if unit_id == first
+                        else await stack.enter_async_context(
+                            async_get_temporary_unit(self.hass, params, unit_id)
+                        )
+                    )
+                    try:
+                        found.append(await _read_identity(unit, unit_id))
+                    except ModbusTimeoutError:
+                        _LOGGER.debug(
+                            "Unit %s: no answer to the identity read", unit_id
+                        )
+                        if found:
+                            raise ProbeError("ecu_busy") from None
+                        continue
+        except UnsupportedLayoutError as err:
+            raise ProbeError("unsupported_layout", str(err)) from err
+        except ModbusConnectionError as err:
+            reason = "modbus_disabled" if _is_refused(err) else "cannot_connect"
+            raise ProbeError(reason) from err
+        except ModbusTimeoutError as err:
+            raise ProbeError("cannot_connect") from err
+        if not found:
+            raise ProbeError("no_inverters")
+        return found
+
+    async def _scan(
+        self,
+        stack: AsyncExitStack,
+        params: ModbusTcpParams,
+        anchor: ModbusUnit,
+        first: int,
+    ) -> list[int]:
+        """Walk the addresses from 1 until two in a row stay silent."""
+        unit_ids: list[int] = []
+        misses = 0
+        for unit_id in range(first, SCAN_LIMIT + 1):
+            unit = (
+                anchor
+                if unit_id == first
+                else await stack.enter_async_context(
+                    async_get_temporary_unit(self.hass, params, unit_id)
+                )
+            )
+            unit.require_timeout(PROBE_TIMEOUT)
+            marker = await _marker(unit)
+            _LOGGER.debug("Address %s: %s", unit_id, marker or "no answer")
+            if marker == SUNSPEC_MARKER:
+                unit_ids.append(unit_id)
+                misses = 0
+                continue
+            if marker is not None and not unit_ids:
+                # Something answers, but it is not a SunSpec device.
+                raise ProbeError("not_apsystems")
+            if unit_ids:
+                misses += 1
+                if misses >= SCAN_STOP_AFTER_MISSES:
+                    break
+            elif unit_id - first + 1 >= SCAN_STOP_AFTER_MISSES:
+                # Nothing on the first addresses: the ECU is reachable but no
+                # inverter has an address yet.
+                raise ProbeError("no_inverters")
+        return unit_ids
+
+    # ---- confirmation ----------------------------------------------------
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show what was found and ask for the optional ECU id."""
+        if user_input is not None and not self._show_confirm:
+            ecu_id = user_input.get(CONF_ECU_ID, "").strip()
+            data: dict[str, Any] = {
+                CONF_HOST: self._host,
+                CONF_PORT: self._port,
+                CONF_INVERTERS: [item.as_config() for item in self._found],
+            }
+            if self._mac:
+                data[CONF_MAC] = self._mac
+            if ecu_id:
+                data[CONF_ECU_ID] = ecu_id
+            title = f"ECU {ecu_id}" if ecu_id else "APsystems ECU"
+
+            if self.source == SOURCE_RECONFIGURE:
+                entry = self._get_reconfigure_entry()
+                return self.async_update_reload_and_abort(
+                    entry, data={**entry.data, **data}, title=title
+                )
+
+            unique_id = ecu_id or self._found[0].serial_number
+            await self.async_set_unique_id(unique_id, raise_on_progress=False)
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(title=title, data=data)
+
+        rows = "\n".join(
+            f"- {item.unit_id}: {item.model} {item.serial_number}"
+            for item in self._found
+        )
+        schema = probatio.Schema(
+            {probatio.Optional(CONF_ECU_ID, default=""): cv.string}
+        )
+        if self.source == SOURCE_RECONFIGURE:
+            schema = probatio.Schema({})
+        self._show_confirm = False
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=schema,
+            description_placeholders={
+                "count": str(len(self._found)),
+                "inverters": rows,
+            },
+        )
+
+    # ---- helpers ---------------------------------------------------------
+
+    @staticmethod
+    def _connection_schema(defaults: Mapping[str, Any] | None) -> probatio.Schema:
+        defaults = defaults or {}
+        return probatio.Schema(
+            {
+                probatio.Required(
+                    CONF_HOST, default=defaults.get(CONF_HOST, "")
+                ): cv.string,
+                probatio.Required(
+                    CONF_PORT, default=defaults.get(CONF_PORT, DEFAULT_PORT)
+                ): probatio.Port(),
+                probatio.Optional(
+                    CONF_UNIT_IDS, default=defaults.get(CONF_UNIT_IDS, "")
+                ): cv.string,
+            }
+        )
+
+
+class OptionsFlow(OptionsFlowWithReload):
+    """Polling interval; the integration reloads when it changes."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show and store the options."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_SCAN_INTERVAL,
+                        default=self.config_entry.options.get(
+                            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=MIN_SCAN_INTERVAL,
+                            max=MAX_SCAN_INTERVAL,
+                            step=10,
+                            unit_of_measurement="s",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
+        )

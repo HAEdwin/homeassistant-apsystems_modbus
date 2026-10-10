@@ -1,0 +1,55 @@
+"""Diagnostics: the last poll per inverter, without addresses or serial numbers."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.const import CONF_HOST, CONF_MAC
+from homeassistant.core import HomeAssistant
+
+from .const import CONF_ECU_ID, CONF_SERIAL_NUMBER
+from .coordinator import ApsystemsConfigEntry
+from .ecu import Inverter
+
+TO_REDACT = {CONF_HOST, CONF_MAC, CONF_ECU_ID, CONF_SERIAL_NUMBER, "serial_number"}
+
+
+def _component_values(inverter: Inverter) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for name in ("identity", "measurements", "status"):
+        component = getattr(inverter, name)
+        values[name] = {
+            field: getattr(component, field) for field in component.declared_fields
+        }
+    return values
+
+
+async def async_get_config_entry_diagnostics(
+    hass: HomeAssistant, entry: ApsystemsConfigEntry
+) -> dict[str, Any]:
+    """Return what the integration knows, redacted."""
+    coordinator = entry.runtime_data
+    data = coordinator.data
+    return {
+        "entry": {
+            "title": entry.title,
+            "data": async_redact_data(dict(entry.data), TO_REDACT),
+            "options": dict(entry.options),
+        },
+        "coordinator": {
+            "last_update_success": coordinator.last_update_success,
+            "update_interval": str(coordinator.update_interval),
+            "available": sorted(data.available) if data else None,
+            "power": data.power if data else None,
+            "energy_today": data.energy_today if data else None,
+            "online": data.online if data else None,
+            "last_change": data.last_change.isoformat()
+            if data and data.last_change
+            else None,
+        },
+        "inverters": {
+            str(unit_id): async_redact_data(_component_values(inverter), TO_REDACT)
+            for unit_id, inverter in sorted(coordinator.inverters.items())
+        },
+    }

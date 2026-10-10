@@ -1,0 +1,23 @@
+{
+  "entity": {
+    "sensor": {
+      "inverters_online": {
+        "default": "mdi:solar-panel"
+      },
+      "last_data_update": {
+        "default": "mdi:update"
+      },
+      "status": {
+        "default": "mdi:information-outline"
+      },
+      "event_code": {
+        "default": "mdi:alert-circle-outline"
+      }
+    },
+    "binary_sensor": {
+      "grid_connection": {
+        "default": "mdi:transmission-tower"
+      }
+    }
+  }
+}

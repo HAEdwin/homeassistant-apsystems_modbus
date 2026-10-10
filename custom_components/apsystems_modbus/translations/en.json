@@ -1,0 +1,162 @@
+{
+  "config": {
+    "flow_title": "APsystems ECU at {host}",
+    "step": {
+      "user": {
+        "title": "Connect to the ECU",
+        "description": "The ECU must be connected by Ethernet cable and Modbus must be enabled on the ECU (EMA Manager app via the ECU's access point: Local Access → Workspace → Modbus settings). Nothing else should poll the ECU over Modbus; it overloads easily.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "unit_ids": "Inverter addresses"
+        },
+        "data_description": {
+          "host": "IP address of the ECU on the wired network.",
+          "port": "502 unless you changed it.",
+          "unit_ids": "Leave empty to search automatically, or enter the addresses from EMA Manager, for example 1-8 or 1, 2, 5."
+        }
+      },
+      "reconfigure": {
+        "title": "Change the connection",
+        "description": "Inverters are recognised by serial number, so changing an address keeps their history.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "unit_ids": "Inverter addresses"
+        },
+        "data_description": {
+          "host": "IP address of the ECU on the wired network.",
+          "port": "502 unless you changed it.",
+          "unit_ids": "Leave empty to search automatically, or enter the addresses from EMA Manager, for example 1-8 or 1, 2, 5."
+        }
+      },
+      "dhcp_confirm": {
+        "title": "APsystems ECU found",
+        "description": "Set up the APsystems ECU at {host}? Make sure Modbus is enabled on the ECU (EMA Manager, Local Access → Modbus settings) and that nothing else polls it over Modbus."
+      },
+      "confirm": {
+        "title": "Found {count} inverters",
+        "description": "{inverters}\n\nCompare the addresses and serial numbers with the Modbus settings in EMA Manager.",
+        "data": {
+          "ecu_id": "ECU ID (optional)"
+        },
+        "data_description": {
+          "ecu_id": "The number on the ECU label, also shown in EMA Manager. Used for the device name; otherwise the first inverter identifies the ECU."
+        }
+      }
+    },
+    "progress": {
+      "scan": "Searching for inverters. This takes up to a minute."
+    },
+    "error": {
+      "cannot_connect": "No answer from the ECU. Check the IP address and connect the ECU by Ethernet cable; Modbus TCP is not available over Wi-Fi.",
+      "modbus_disabled": "The ECU refused the connection. Modbus is off by default: press the AP button on the ECU, connect to its Wi-Fi, open EMA Manager with Local Access and enable Modbus under Workspace → Modbus settings with an address for every inverter. Then try again.",
+      "not_apsystems": "The device at this address is not an APsystems ECU.",
+      "no_inverters": "No inverter answered. Give each inverter an address in the Modbus settings of EMA Manager (Local Access), or enter the addresses here.",
+      "ecu_busy": "The ECU stopped answering during the search. Stop other Modbus clients, wait five minutes and try again.",
+      "unsupported_layout": "The register layout differs from the tested ECU-R. Please share a register dump in an issue.",
+      "invalid_unit_ids": "Enter addresses between 1 and 247, for example 1-8 or 1, 2, 5.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "already_in_progress": "Configuration flow is already in progress",
+      "cannot_connect": "Failed to connect",
+      "reconfigure_successful": "Re-configuration was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polling",
+        "data": {
+          "scan_interval": "Poll interval"
+        },
+        "data_description": {
+          "scan_interval": "Seconds between polls. The ECU only refreshes its values about every 5 minutes, so lower values add load without new data."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "No answer from the ECU at {host}. Check the IP address, connect the ECU by Ethernet cable and make sure Modbus is enabled on the ECU (EMA Manager, Local Access)."
+    },
+    "link_in_use": {
+      "message": "Another integration already uses the Modbus device at {host} with different connection settings."
+    },
+    "unsupported_layout": {
+      "message": "The device does not serve the register layout of a supported APsystems ECU ({details}). Please share a register dump in an issue."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "power": {
+        "name": "Power"
+      },
+      "energy_today": {
+        "name": "Energy today"
+      },
+      "inverters_online": {
+        "name": "Inverters online"
+      },
+      "last_data_update": {
+        "name": "Last data update"
+      },
+      "ac_voltage": {
+        "name": "AC voltage"
+      },
+      "ac_current": {
+        "name": "AC current"
+      },
+      "frequency": {
+        "name": "Frequency"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "apparent_power": {
+        "name": "Apparent power"
+      },
+      "reactive_power": {
+        "name": "Reactive power"
+      },
+      "power_factor": {
+        "name": "Power factor"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "off": "Off",
+          "sleeping": "Sleeping",
+          "starting": "Starting",
+          "mppt": "Producing",
+          "throttled": "Throttled",
+          "shutting_down": "Shutting down",
+          "fault": "Fault",
+          "standby": "Standby"
+        }
+      },
+      "event_code": {
+        "name": "Event code"
+      },
+      "dc_voltage": {
+        "name": "DC voltage {channel}"
+      },
+      "dc_current": {
+        "name": "DC current {channel}"
+      },
+      "dc_power": {
+        "name": "DC power {channel}"
+      }
+    },
+    "binary_sensor": {
+      "online": {
+        "name": "Online"
+      },
+      "grid_connection": {
+        "name": "Grid connection"
+      }
+    }
+  }
+}

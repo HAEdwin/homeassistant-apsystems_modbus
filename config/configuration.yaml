@@ -1,0 +1,8 @@
+# Configuration for the local development instance started by scripts/develop.
+default_config:
+
+logger:
+  default: info
+  logs:
+    custom_components.apsystems_modbus: debug
+    modbus_connection: debug
