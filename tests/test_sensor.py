@@ -196,7 +196,10 @@ async def test_lifetime_and_peak_sensors(
     assert float(lifetime.state) == pytest.approx(1.096, abs=0.001)
     assert lifetime.attributes["state_class"] == "total_increasing"
     assert lifetime.attributes["unit_of_measurement"] == "kWh"
-    assert float(hass.states.get("sensor.apsystems_ecu_lifetime_peak_power").state) == 710.0
+    assert (
+        float(hass.states.get("sensor.apsystems_ecu_lifetime_peak_power").state)
+        == 710.0
+    )
 
 
 async def test_lifetime_stays_available_while_ecu_is_unreachable(
