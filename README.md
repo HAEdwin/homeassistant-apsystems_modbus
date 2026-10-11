@@ -94,11 +94,14 @@ Add **Lifetime energy** of the ECU device as solar production under
 **Power limit** on the ECU device curtails the output of all inverters, in
 whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
 
-- Inverters follow a new limit within a few minutes, in tests up to about 15.
-- The slider shows what the ECU reports. If a change does not get through, the
-  integration keeps trying until it does.
-- Nothing reverts on its own. If Home Assistant stops, the last limit stays.
-  Set it to 100 before removing the integration.
+- Inverters follow a change within a few minutes, in tests up to about 15.
+- At 0 each inverter still delivers about 20 to 30 W.
+- If a change does not reach the ECU, you get a message and the integration
+  tries again by itself.
+- Sometimes an inverter does not follow a change. Check the power of each
+  inverter after 15 minutes. If one did not follow, set a different value,
+  wait 10 minutes, then set the value you want again.
+- The limit stays when Home Assistant stops.
 
 Example: no export at negative feed-in prices. Replace the entity IDs with
 yours.
@@ -159,8 +162,8 @@ enable the integration again.
 
 ## Removing the integration
 
-Set the power limit to 100, then delete the integration under *Settings →
-Devices & services*. An active limit is released on removal when possible.
+Set the power limit to 100 and check that all inverters deliver power again.
+Then delete the integration under *Settings → Devices & services*.
 The lifetime total is kept, so it continues when you add the same ECU again.
 
 ## Support the project
