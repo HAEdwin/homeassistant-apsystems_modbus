@@ -54,7 +54,7 @@ async def async_setup_entry(
 
 
 class InverterOnlineSensor(InverterEntity, BinarySensorEntity):
-    """Whether the inverter is feeding in (frequency or power above zero)."""
+    """Whether the inverter is awake and on the grid (frequency or power above zero)."""
 
     @property
     def is_on(self) -> bool:

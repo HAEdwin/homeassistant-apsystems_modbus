@@ -137,6 +137,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
     InverterSensorDescription(
         key="ac_voltage",
         translation_key="ac_voltage",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
@@ -146,6 +147,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
     InverterSensorDescription(
         key="ac_current",
         translation_key="ac_current",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
@@ -155,6 +157,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
     InverterSensorDescription(
         key="frequency",
         translation_key="frequency",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.FREQUENCY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfFrequency.HERTZ,
@@ -164,6 +167,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
     InverterSensorDescription(
         key="temperature",
         translation_key="temperature",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -173,6 +177,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
     InverterSensorDescription(
         key="apparent_power",
         translation_key="apparent_power",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.APPARENT_POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
@@ -183,6 +188,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
     InverterSensorDescription(
         key="reactive_power",
         translation_key="reactive_power",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.REACTIVE_POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
@@ -193,6 +199,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
     InverterSensorDescription(
         key="power_factor",
         translation_key="power_factor",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.POWER_FACTOR,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
@@ -221,6 +228,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
         InverterSensorDescription(
             key=f"dc_voltage_{channel}",
             translation_key="dc_voltage",
+            entity_category=EntityCategory.DIAGNOSTIC,
             translation_placeholders={"channel": str(channel)},
             device_class=SensorDeviceClass.VOLTAGE,
             state_class=SensorStateClass.MEASUREMENT,
@@ -235,6 +243,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
         InverterSensorDescription(
             key=f"dc_current_{channel}",
             translation_key="dc_current",
+            entity_category=EntityCategory.DIAGNOSTIC,
             translation_placeholders={"channel": str(channel)},
             device_class=SensorDeviceClass.CURRENT,
             state_class=SensorStateClass.MEASUREMENT,
@@ -249,6 +258,7 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
         InverterSensorDescription(
             key=f"dc_power_{channel}",
             translation_key="dc_power",
+            entity_category=EntityCategory.DIAGNOSTIC,
             translation_placeholders={"channel": str(channel)},
             device_class=SensorDeviceClass.POWER,
             state_class=SensorStateClass.MEASUREMENT,

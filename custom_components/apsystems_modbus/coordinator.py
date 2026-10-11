@@ -25,10 +25,11 @@ from .const import (
     MAX_BACKOFF,
     MAX_INVERTER_POWER,
     MAX_TIMEOUTS_PER_CYCLE,
+    RETRY_AFTER_FAILURE,
 )
 from .ecu import Inverter
 from .lifetime import MAX_DAILY_WH, EnergyLedger
-from .power_limit import PowerLimit
+from .power_limit import PowerLimit, store_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,11 +47,9 @@ class EcuData:
     energy_today: float | None = None
     """Sum of the daily counters as the ECU reports them, in Wh."""
     online: int = 0
-    """Inverters that are feeding in."""
+    """Inverters that are awake and on the grid, even at 0 W at dusk."""
     last_change: datetime | None = None
     """When the ECU last reported different values."""
-    timeouts: int = 0
-    """Inverters that did not answer this cycle."""
     cut_short: bool = False
     """Whether the cycle stopped early because too many inverters were silent."""
 
@@ -60,9 +59,11 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
 
     The ECU is a small device that overloads easily. Each cycle reads the
     inverters one after another; after ``MAX_TIMEOUTS_PER_CYCLE`` unanswered
-    inverters the rest of the cycle is skipped, the link is recycled and the
-    interval doubles until a cycle completes again. A pending write is let
-    through between two inverters via ``write_lock``.
+    inverters the rest of the cycle is skipped and the link is recycled. The
+    next poll follows after two minutes, about the time the ECU needs to
+    restart, and from then on the wait doubles, up to ``MAX_BACKOFF``, until
+    a cycle completes.
+    A pending write is let through between two inverters via ``write_lock``.
     """
 
     config_entry: ApsystemsConfigEntry
@@ -103,7 +104,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         """Configured serial number per unit id."""
         self.daily: dict[int, float] = {}
         """Last valid daily counter per unit id in Wh, as the ECU reports it."""
-        self.power_limit = PowerLimit(self, lead)
+        self.power_limit = PowerLimit(self, lead, store_for(hass, entry.entry_id))
         """The ECU-wide power limit, written and read back through ``lead``."""
         self._timeout_budget = min(MAX_TIMEOUTS_PER_CYCLE, len(inverters))
         self._degraded = False
@@ -135,6 +136,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                         await self._async_drop_link()
                         report = await inverter.async_poll(Inverter.POLLED)
                 except ModbusConnectionError as err:
+                    await self._async_back_off()
                     raise UpdateFailed(
                         translation_domain=DOMAIN,
                         translation_key="connection_lost",
@@ -151,13 +153,13 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 continue
             data.available.add(unit_id)
 
-        data.timeouts = timeouts
         data.cut_short = timeouts >= self._timeout_budget
-        if data.cut_short:
+        if data.cut_short or not data.available:
             self.power_limit.note_silent_ecu()
-        await self._pace(timeouts)
+            await self._async_back_off()
+        else:
+            self._recover()
         if not data.available:
-            self.power_limit.note_silent_ecu()
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="no_inverter_answered",
@@ -177,31 +179,34 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         if unit_id not in self._reported:
             self._reported.add(unit_id)
             _LOGGER.warning(
-                "Unit %s: serial number %s does not match the configured %s; "
+                "Unit %s: another inverter than the configured one answers, "
                 "reconfigure the integration",
                 unit_id,
-                actual,
-                expected,
             )
         return False
 
-    async def _pace(self, timeouts: int) -> None:
-        """Back off while the ECU is struggling, recover when it answers again."""
-        if timeouts >= self._timeout_budget:
-            current = self.update_interval or self._base_interval
+    async def _async_back_off(self) -> None:
+        """Poll again soon after a first failure, then less and less often."""
+        if not self._degraded:
+            self._degraded = True
+            self.update_interval = RETRY_AFTER_FAILURE
+            _LOGGER.warning(
+                "The ECU did not answer. Trying again in %s, then less often "
+                "until it responds",
+                RETRY_AFTER_FAILURE,
+            )
+        else:
+            current = self.update_interval or RETRY_AFTER_FAILURE
             self.update_interval = min(current * 2, MAX_BACKOFF)
-            # A link that stopped answering is opened fresh next time.
-            await self._async_drop_link()
-            if not self._degraded:
-                self._degraded = True
-                _LOGGER.warning(
-                    "The ECU stopped answering; polling less often (every %s) "
-                    "until it responds again",
-                    self.update_interval,
-                )
-            return
-        # A cycle that was not cut short means the ECU answers again, even if
-        # one inverter stays silent (for example a broken one).
+        # A link that stopped answering is opened fresh next time.
+        await self._async_drop_link()
+
+    def _recover(self) -> None:
+        """Return to the normal interval once a cycle completes again.
+
+        A cycle that was not cut short means the ECU answers, even if one
+        inverter stays silent (for example a broken one).
+        """
         if self._degraded:
             self._degraded = False
             self.update_interval = self._base_interval

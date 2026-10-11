@@ -25,6 +25,7 @@ from custom_components.apsystems_modbus.const import (
     CONF_SERIAL_NUMBER,
     CONF_UNIT_ID,
     MAX_BACKOFF,
+    RETRY_AFTER_FAILURE,
 )
 
 from .conftest import INVERTERS, add_inverter, set_float32
@@ -177,13 +178,20 @@ async def test_timeout_budget_skips_rest_and_backs_off(
     # Units 2 and 3 timed out, so unit 4 was not even asked this cycle.
     assert coordinator.data.available == {1}
     assert mock_ecu.for_unit(4).read_events == []
-    assert coordinator.update_interval == base_interval * 2
+    # The first failure is retried soon: the ECU may just be restarting.
+    assert coordinator.update_interval == RETRY_AFTER_FAILURE
     # The daily total keeps its last complete value instead of dipping.
     assert coordinator.data.energy_today == pytest.approx(554.08 + 3 * 541.79, abs=0.05)
 
+    # Still silent: from then on less and less often.
     await coordinator.async_refresh()
+    assert coordinator.update_interval == RETRY_AFTER_FAILURE * 2
     await coordinator.async_refresh()
-    assert coordinator.update_interval <= MAX_BACKOFF
+    assert coordinator.update_interval == RETRY_AFTER_FAILURE * 4
+    await coordinator.async_refresh()
+    assert coordinator.update_interval == MAX_BACKOFF
+    await coordinator.async_refresh()
+    assert coordinator.update_interval == MAX_BACKOFF
 
     mock_ecu.for_unit(2).fail_requests(None)
     mock_ecu.for_unit(3).fail_requests(None)
@@ -250,7 +258,7 @@ async def test_interval_recovers_while_one_inverter_stays_silent(
     mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
     await coordinator.async_refresh()
-    assert coordinator.update_interval == base_interval * 2
+    assert coordinator.update_interval == RETRY_AFTER_FAILURE
 
     # The ECU is back, but unit 2 stays broken: normal polling resumes anyway.
     mock_ecu.for_unit(1).fail_requests(None)

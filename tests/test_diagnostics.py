@@ -41,5 +41,7 @@ async def test_diagnostics_are_redacted(
         "refreshing": False,
         "next_refresh": None,
         "refresh_count": 0,
+        "installation_power_kw": None,
+        "overshoot_refreshes": 0,
         "last_refresh": None,
     }

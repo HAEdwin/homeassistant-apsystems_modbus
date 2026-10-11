@@ -38,10 +38,12 @@
         "title": "Gevonden omvormers: {count}",
         "description": "| ID | Adres | Model |\n|---|---|---|\n{inverters}",
         "data": {
-          "lifetime_energy": "Totale opbrengst (optioneel)"
+          "lifetime_energy": "Totale opbrengst (optioneel)",
+          "installation_power": "Installatievermogen (optioneel)"
         },
         "data_description": {
-          "lifetime_energy": "De totale opbrengst uit de EMA-app, in kWh. De lifetime-teller gaat vanaf hier verder. Leeg laten om bij 0 te beginnen."
+          "lifetime_energy": "De totale opbrengst uit de EMA-app, in kWh. De lifetime-teller gaat vanaf hier verder. Leeg laten om bij 0 te beginnen.",
+          "installation_power": "Het vermogen van alle omvormers samen, in kW. Met {count} DS3-L van 0.73 kW is dat {example_kw} kW. Niet het piekvermogen van de panelen. Alleen voor één type omvormer. Hiermee stel je de limiet ook in kW in, en merkt de integratie een omvormer op die de limiet negeert."
         }
       }
     },
@@ -56,7 +58,8 @@
       "ecu_busy": "De ECU stopte met antwoorden tijdens het zoeken. Stop andere Modbus-clients, wacht vijf minuten en probeer het opnieuw.",
       "unsupported_layout": "De registerindeling wijkt af van de geteste ECU-R. Deel een registerdump in een issue.",
       "invalid_unit_ids": "Vul adressen tussen 1 en 247 in, bijvoorbeeld 1-8 of 1, 2, 5.",
-      "unknown": "Onverwachte fout"
+      "unknown": "Onverwachte fout",
+      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {example_kw}."
     },
     "abort": {
       "already_configured": "Apparaat is al geconfigureerd",
@@ -74,14 +77,19 @@
         "data": {
           "scan_interval": "Interval",
           "lifetime_energy": "Totale opbrengst",
-          "peak_power": "Piekvermogen ooit"
+          "peak_power": "Piekvermogen ooit",
+          "installation_power": "Installatievermogen"
         },
         "data_description": {
           "scan_interval": "Seconden tussen twee uitlezingen. De ECU ververst zijn waarden maar ongeveer elke 5 minuten, dus lager geeft alleen meer belasting.",
           "lifetime_energy": "Alleen aanpassen om de teller te corrigeren. Hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur. Dat uur kun je aanpassen onder Ontwikkelhulpmiddelen → Statistieken.",
-          "peak_power": "Hoogste totaalvermogen tot nu toe. Zet op 0 om opnieuw te beginnen."
+          "peak_power": "Hoogste totaalvermogen tot nu toe. Zet op 0 om opnieuw te beginnen.",
+          "installation_power": "Het vermogen van alle omvormers samen, in kW. Met {count} DS3-L van 0.73 kW is dat {example_kw} kW. Niet het piekvermogen van de panelen. Alleen voor één type omvormer. Hiermee stel je de limiet ook in kW in, en merkt de integratie een omvormer op die de limiet negeert."
         }
       }
+    },
+    "error": {
+      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {example_kw}."
     }
   },
   "exceptions": {
@@ -105,6 +113,9 @@
     },
     "power_limit_invalid": {
       "message": "{value} is geen geldige vermogenslimiet. Vul een heel getal van 0 tot 100 in."
+    },
+    "limit_maybe_active": {
+      "message": "De APsystems ECU kon niet worden gecontroleerd tijdens het verwijderen van de integratie. Als er een limiet stond, kunnen de omvormers nog begrensd zijn. Voeg de integratie opnieuw toe en zet de limiet op 100 %."
     }
   },
   "entity": {
@@ -121,6 +132,12 @@
           "standby": "Stand-by"
         }
       }
+    }
+  },
+  "issues": {
+    "check_installation_power": {
+      "title": "Controleer het installatievermogen van de APsystems ECU",
+      "description": "Een omvormer blijft meer leveren dan de limiet van {limit} % toelaat, ook nadat de limiet opnieuw is verstuurd. Het installatievermogen onder Configureren is waarschijnlijk te laag. Deze melding verdwijnt als je het aanpast, een nieuwe limiet zet of Home Assistant herstart."
     }
   }
 }

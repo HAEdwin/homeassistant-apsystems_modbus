@@ -37,6 +37,7 @@ from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .const import (
+    CONF_INSTALLATION_POWER,
     CONF_INVERTERS,
     CONF_LIFETIME_ENERGY,
     CONF_MODEL,
@@ -47,7 +48,9 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MAX_POWER_PER_INVERTER,
     MAX_SCAN_INTERVAL,
+    MIN_POWER_PER_INVERTER,
     MIN_SCAN_INTERVAL,
 )
 from .ecu import (
@@ -89,6 +92,33 @@ _WATT_SELECTOR = selector.NumberSelector(
         min=0, step=1, unit_of_measurement="W", mode=selector.NumberSelectorMode.BOX
     )
 )
+_KW_SELECTOR = selector.NumberSelector(
+    selector.NumberSelectorConfig(
+        min=0, step=0.1, unit_of_measurement="kW", mode=selector.NumberSelectorMode.BOX
+    )
+)
+DS3_L_KW = 0.73
+"""Output of a DS3-L, the most common type, for the example under the field."""
+
+
+def _installation_power_error(kw: float | None, inverters: int) -> str | None:
+    """Return an error key when the power does not fit the number of inverters.
+
+    Catches the most likely mistake, watts typed into the kW field.
+    """
+    if kw is None or not inverters:
+        return None
+    if MIN_POWER_PER_INVERTER <= kw / inverters <= MAX_POWER_PER_INVERTER:
+        return None
+    return "invalid_installation_power"
+
+
+def _power_placeholders(inverters: int) -> dict[str, str]:
+    """Return the example under the installation power field."""
+    return {
+        "count": str(inverters),
+        "example_kw": f"{round(inverters * DS3_L_KW, 1)}",
+    }
 
 
 @dataclass(frozen=True)
@@ -546,9 +576,15 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             return self._show_found(probatio.Schema({}))
 
+        errors: dict[str, str] = {}
         if user_input is not None and not self._show_confirm:
-            return await self._async_create(data, user_input)
-        return await self._show_confirm_form(user_input)
+            if error := _installation_power_error(
+                user_input.get(CONF_INSTALLATION_POWER), len(self._found)
+            ):
+                errors[CONF_INSTALLATION_POWER] = error
+            else:
+                return await self._async_create(data, user_input)
+        return await self._show_confirm_form(user_input, errors)
 
     async def _async_create(
         self, data: dict[str, Any], user_input: Mapping[str, Any]
@@ -562,26 +598,38 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
             moved[CONF_MAC] = self._mac
         self._abort_if_unique_id_configured(updates=moved)
         await self._apply_start_value(unique_id, user_input.get(CONF_LIFETIME_ENERGY))
-        return self.async_create_entry(title="APsystems ECU", data=data)
+        options = {}
+        if (power := user_input.get(CONF_INSTALLATION_POWER)) is not None:
+            options[CONF_INSTALLATION_POWER] = round(power, 1)
+        return self.async_create_entry(
+            title="APsystems ECU", data=data, options=options
+        )
 
     async def _show_confirm_form(
-        self, user_input: Mapping[str, Any] | None
+        self, user_input: Mapping[str, Any] | None, errors: dict[str, str]
     ) -> ConfigFlowResult:
-        """Show what was found and ask for the lifetime energy so far."""
+        """Show what was found and ask for the lifetime energy and power."""
         if self._stored_lifetime is None:
             stored = await async_stored_lifetime(
                 self.hass, self._found[0].serial_number
             )
             self._stored_lifetime = None if stored is None else round(stored / 1000, 1)
         schema = self.add_suggested_values_to_schema(
-            probatio.Schema({probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR}),
+            probatio.Schema(
+                {
+                    probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR,
+                    probatio.Optional(CONF_INSTALLATION_POWER): _KW_SELECTOR,
+                }
+            ),
             {CONF_LIFETIME_ENERGY: self._stored_lifetime}
             if user_input is None or self._show_confirm
             else dict(user_input),
         )
-        return self._show_found(schema)
+        return self._show_found(schema, errors)
 
-    def _show_found(self, schema: probatio.Schema) -> ConfigFlowResult:
+    def _show_found(
+        self, schema: probatio.Schema, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
         # Table rows in the order and columns of EMA Manager (ID, address),
         # plus the model the ECU reports.
         rows = "\n".join(
@@ -592,9 +640,10 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="confirm",
             data_schema=schema,
+            errors=errors,
             description_placeholders={
-                "count": str(len(self._found)),
                 "inverters": rows,
+                **_power_placeholders(len(self._found)),
             },
         )
 
@@ -652,28 +701,49 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         """Show and store the options."""
         loaded = self.config_entry.state is ConfigEntryState.LOADED
+        inverters = len(self.config_entry.data[CONF_INVERTERS])
+        errors: dict[str, str] = {}
         if user_input is not None:
-            if loaded:
-                await self._apply_corrections(user_input)
-            return self.async_create_entry(
-                data={CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL]}
-            )
-        fields: dict[Any, Any] = {}
+            power = user_input.get(CONF_INSTALLATION_POWER)
+            if error := _installation_power_error(power, inverters):
+                errors[CONF_INSTALLATION_POWER] = error
+            else:
+                if loaded:
+                    await self._apply_corrections(user_input)
+                options: dict[str, Any] = {
+                    CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL]
+                }
+                if power is not None:
+                    options[CONF_INSTALLATION_POWER] = round(power, 1)
+                return self.async_create_entry(data=options)
+        fields: dict[Any, Any] = {
+            probatio.Optional(CONF_INSTALLATION_POWER): _KW_SELECTOR,
+        }
         if loaded:
             ledger = self.config_entry.runtime_data.ledger
             self._shown = {
                 CONF_LIFETIME_ENERGY: round(ledger.lifetime / 1000, 1),
                 CONF_PEAK_POWER: round(ledger.peak_power),
             }
-            fields = {
-                probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR,
-                probatio.Optional(CONF_PEAK_POWER): _WATT_SELECTOR,
+            fields[probatio.Optional(CONF_LIFETIME_ENERGY)] = _KWH_SELECTOR
+            fields[probatio.Optional(CONF_PEAK_POWER)] = _WATT_SELECTOR
+        suggested = (
+            dict(user_input)
+            if user_input is not None
+            else {
+                **self._shown,
+                CONF_INSTALLATION_POWER: self.config_entry.options.get(
+                    CONF_INSTALLATION_POWER
+                ),
             }
+        )
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                self._options_schema(fields), self._shown
+                self._options_schema(fields), suggested
             ),
+            errors=errors,
+            description_placeholders=_power_placeholders(inverters),
         )
 
     async def _apply_corrections(self, user_input: Mapping[str, Any]) -> None:

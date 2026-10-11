@@ -10,6 +10,8 @@ CONF_INVERTERS = "inverters"
 CONF_ECU_ID = "ecu_id"
 CONF_LIFETIME_ENERGY = "lifetime_energy"
 CONF_PEAK_POWER = "peak_power"
+CONF_INSTALLATION_POWER = "installation_power"
+"""Output of all inverters together, in kW; optional."""
 
 CONF_UNIT_ID = "unit_id"
 CONF_SERIAL_NUMBER = "serial_number"
@@ -35,3 +37,8 @@ MAX_INVERTER_POWER = 5000
 """Watts no microinverter reaches; a higher reading is not counted in totals."""
 MAX_BACKOFF = timedelta(minutes=15)
 """Longest poll interval while the ECU is not responding."""
+RETRY_AFTER_FAILURE = timedelta(minutes=2)
+"""Wait after the first failed poll; about the time the ECU needs to restart."""
+MIN_POWER_PER_INVERTER = 0.2
+MAX_POWER_PER_INVERTER = 2.5
+"""Plausible output of one microinverter in kW, to check the installation power."""

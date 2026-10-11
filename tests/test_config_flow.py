@@ -689,3 +689,69 @@ async def test_silent_inverter_during_search_is_left_out(
     result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "1"
+
+
+async def test_installation_power_at_setup(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    # The example under the field uses the number of inverters found.
+    assert result["description_placeholders"]["example_kw"] == "1.5"
+
+    # Watts typed into the kW field are caught.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"installation_power": 1460}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"installation_power": "invalid_installation_power"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"installation_power": 1.46}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {"installation_power": 1.5}
+
+
+async def test_setup_without_installation_power_has_no_option(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {}
+
+
+async def test_options_installation_power(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    assert suggested(result, "installation_power") is None
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCAN_INTERVAL: 300, "installation_power": 0.1}
+    )
+    assert result["errors"] == {"installation_power": "invalid_installation_power"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCAN_INTERVAL: 300, "installation_power": 1.4}
+    )
+    await hass.async_block_till_done()
+    assert mock_config_entry.options == {
+        CONF_SCAN_INTERVAL: 300,
+        "installation_power": 1.4,
+    }
+
+    # Leaving it empty removes it again.
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    assert suggested(result, "installation_power") == 1.4
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCAN_INTERVAL: 300}
+    )
+    await hass.async_block_till_done()
+    assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 300}

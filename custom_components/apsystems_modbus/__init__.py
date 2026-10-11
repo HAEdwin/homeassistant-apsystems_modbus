@@ -15,14 +15,15 @@ from homeassistant.exceptions import (
     ConfigEntryNotReady,
     HomeAssistantError,
 )
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
+from homeassistant.helpers.translation import async_get_translations
 
 from .const import CONF_INVERTERS, CONF_SERIAL_NUMBER, CONF_UNIT_ID, DOMAIN
 from .coordinator import ApsystemsConfigEntry, EcuCoordinator
 from .ecu import Inverter, UnsupportedLayoutError
 from .entity import ecu_device_info, ecu_identifier
 from .lifetime import EnergyLedger
-from .power_limit import NO_LIMIT, effective_limit
+from .power_limit import NO_LIMIT, effective_limit, issue_id_for, store_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +58,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
     await ledger.async_load()
     coordinator = EcuCoordinator(hass, entry, inverters, lead, ledger)
     entry.runtime_data = coordinator
+    await coordinator.power_limit.async_load()
+    # A notice about the installation power is checked afresh after a change.
+    ir.async_delete_issue(hass, DOMAIN, issue_id_for(entry.entry_id))
     # The inverter devices hang below the ECU device, so register that first.
     registry = dr.async_get(hass)
     ecu_device = registry.async_get_or_create(
@@ -127,6 +131,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         await entry.runtime_data.ledger.async_save()
+        await entry.runtime_data.power_limit.async_save()
     return unloaded
 
 
@@ -134,8 +139,11 @@ async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
     """Release a power limit that is still set, so the inverters are not left limited.
 
     If the limit could not be checked or released, the user is told, because
-    nothing else would release it any more.
+    nothing else would release it any more. The stored choice goes too, so
+    adding the ECU again starts without a limit.
     """
+    await store_for(hass, entry.entry_id).async_remove()
+    ir.async_delete_issue(hass, DOMAIN, issue_id_for(entry.entry_id))
     try:
         released = await _async_release_limit(hass, entry)
     except (ModbusError, HomeAssistantError) as err:
@@ -143,11 +151,20 @@ async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
         released = False
     if released:
         return
-    persistent_notification.async_create(
-        hass,
+    # Notifications have no translation keys of their own, so the text comes
+    # from this integration's translations in the user's language.
+    texts = await async_get_translations(
+        hass, hass.config.language, "exceptions", [DOMAIN]
+    )
+    message = texts.get(
+        f"component.{DOMAIN}.exceptions.limit_maybe_active.message",
         "The APsystems ECU could not be checked while the integration was "
         "removed. If a power limit was set, the inverters may still be "
         "limited. Add the integration again and set the power limit to 100 %.",
+    )
+    persistent_notification.async_create(
+        hass,
+        message,
         title="APsystems Modbus",
         notification_id=f"{DOMAIN}_power_limit_{entry.entry_id}",
     )

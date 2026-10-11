@@ -63,6 +63,8 @@ async def async_get_config_entry_diagnostics(
             if coordinator.power_limit.next_refresh
             else None,
             "refresh_count": coordinator.power_limit.refresh_count,
+            "installation_power_kw": coordinator.power_limit.installation_power,
+            "overshoot_refreshes": coordinator.power_limit.overshoot_refreshes,
             "last_refresh": coordinator.power_limit.last_refresh.isoformat()
             if coordinator.power_limit.last_refresh
             else None,

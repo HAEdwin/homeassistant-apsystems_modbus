@@ -17,9 +17,9 @@ Features:
   measured and inverters online.
 - **One device per microinverter** with its own power, energy today, voltage,
   current, frequency, temperature, DC values per panel, status and event code.
-- **Control: power limit.** Curtail the output of all inverters, 0 to 100 %,
-  by hand or from an automation. With a dynamic tariff you can go to zero
-  export at negative prices and back to full power when they recover.
+- **Control: power limit.** Curtail the output of all inverters, in percent
+  or in kW, by hand or from an automation. With a dynamic tariff you can go
+  to zero export at negative prices and back to full power when they recover.
 - **Setup**: the ECU is discovered on your network and the inverters are found
   automatically.
 
@@ -79,10 +79,12 @@ Devices & services*, or add it yourself:
 | Port | 502 |
 | Inverter addresses | The Modbus addresses from EMA Manager, like `1-8` or `1, 2, 5`. Leave empty to find them automatically. |
 | Lifetime energy (optional) | Your total from the EMA app in kWh. It counts on from there. Leave empty to start at 0. |
+| Installation power (optional) | Output of all inverters together in kW, for example 5.8 for eight DS3-L of 730 W. Not the peak power of the panels. Only for one inverter type. |
 
-Under *Configure* you can change the poll interval and correct the lifetime
-energy and lifetime peak power. A correction shows up once as production in
-that hour. Fix that under *Developer tools → Statistics*.
+Under *Configure* you can change the poll interval, enter the installation
+power and correct the lifetime energy and lifetime peak power. A correction
+shows up once as production in that hour. Fix that under
+*Developer tools → Statistics*.
 
 ## Energy dashboard
 
@@ -100,10 +102,17 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
   tries again by itself.
 - An inverter sometimes misses a change, and a restart of the ECU clears the
   limit. So the integration sends the limit again 15 and 75 minutes after a
-  change, and after the ECU restarts. For a few minutes it uses one percent
-  more or less, otherwise the ECU does not pass it on.
+  change, and when it notices that the ECU was off. For a few minutes it
+  uses one percent more or less, otherwise the ECU does not pass it on.
 - The limit stays when Home Assistant stops, and the integration picks it up
   again when it starts.
+- With the installation power entered, a second control sets the same limit
+  in kW. Below about 10 % this is an estimate.
+- The integration then also notices an inverter that delivers clearly more
+  than the limit allows, for example after a restart of the ECU it did not
+  see, and sends the limit again. If that does not help, a notice under
+  *Settings → Repairs* asks you to check the installation power. This margin
+  was measured on DS3-L inverters.
 - If an inverter stays limited, set the limit to 100. If that does not help,
   switch the ECU off for a minute. In our tests this cleared the limit on all
   inverters.
@@ -138,7 +147,8 @@ automation:
 - At night inverters read 0 V and 0 Hz. Energy today follows the ECU, which
   resets it during the night.
 - A silent inverter becomes unavailable, but the totals keep its share.
-  If the ECU stops answering, polling slows down and recovers by itself.
+  If the ECU stops answering, the integration tries again after two minutes,
+  then less often, and recovers by itself.
 
 ## Troubleshooting
 

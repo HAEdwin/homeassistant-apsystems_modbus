@@ -213,7 +213,10 @@ class Measurements(Component):
 
     @property
     def is_online(self) -> bool:
-        """Whether the inverter is feeding in.
+        """Whether the inverter is awake and on the grid.
+
+        At dusk an inverter still measures the grid while it delivers 0 W. It
+        counts as online until it switches off for the night.
 
         The ECU occasionally reports a stray 0 for frequency or power while an
         inverter is producing, so either one being positive counts as online.

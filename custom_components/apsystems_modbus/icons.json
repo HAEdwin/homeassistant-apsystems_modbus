@@ -22,6 +22,9 @@
     "number": {
       "power_limit": {
         "default": "mdi:car-speed-limiter"
+      },
+      "power_limit_kw": {
+        "default": "mdi:car-speed-limiter"
       }
     }
   }

@@ -38,10 +38,12 @@
         "title": "Inverters found: {count}",
         "description": "| ID | Address | Model |\n|---|---|---|\n{inverters}",
         "data": {
-          "lifetime_energy": "Lifetime energy (optional)"
+          "lifetime_energy": "Lifetime energy (optional)",
+          "installation_power": "Installation power (optional)"
         },
         "data_description": {
-          "lifetime_energy": "Total energy from the EMA app, in kWh. The lifetime counter continues from here. Leave empty to start at 0."
+          "lifetime_energy": "Total energy from the EMA app, in kWh. The lifetime counter continues from here. Leave empty to start at 0.",
+          "installation_power": "Output of all inverters together, in kW. With {count} DS3-L of 0.73 kW that is {example_kw} kW. Not the peak power of the panels. Only for one inverter type. Lets you set the power limit in kW, and lets the integration notice an inverter that ignores the limit."
         }
       }
     },
@@ -56,7 +58,8 @@
       "ecu_busy": "The ECU stopped answering during the search. Stop other Modbus clients, wait five minutes and try again.",
       "unsupported_layout": "The register layout differs from the tested ECU-R. Please share a register dump in an issue.",
       "invalid_unit_ids": "Enter addresses between 1 and 247, for example 1-8 or 1, 2, 5.",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "invalid_installation_power": "This does not fit {count} inverters. Enter the power in kW, for example {example_kw}."
     },
     "abort": {
       "already_configured": "Device is already configured",
@@ -74,14 +77,19 @@
         "data": {
           "scan_interval": "Poll interval",
           "lifetime_energy": "Lifetime energy",
-          "peak_power": "Lifetime peak power"
+          "peak_power": "Lifetime peak power",
+          "installation_power": "Installation power"
         },
         "data_description": {
           "scan_interval": "Seconds between polls. The ECU only refreshes its values about every 5 minutes, so lower values add load without new data.",
           "lifetime_energy": "Change only to correct the counter. It continues from the value you enter. The Energy dashboard shows the change once as production in that hour. You can adjust that hour under Developer tools → Statistics.",
-          "peak_power": "Highest total power so far. Set to 0 to start over."
+          "peak_power": "Highest total power so far. Set to 0 to start over.",
+          "installation_power": "Output of all inverters together, in kW. With {count} DS3-L of 0.73 kW that is {example_kw} kW. Not the peak power of the panels. Only for one inverter type. Lets you set the power limit in kW, and lets the integration notice an inverter that ignores the limit."
         }
       }
+    },
+    "error": {
+      "invalid_installation_power": "This does not fit {count} inverters. Enter the power in kW, for example {example_kw}."
     }
   },
   "exceptions": {
@@ -105,6 +113,9 @@
     },
     "power_limit_invalid": {
       "message": "{value} is not a valid power limit. Enter a whole number from 0 to 100."
+    },
+    "limit_maybe_active": {
+      "message": "The APsystems ECU could not be checked while the integration was removed. If a power limit was set, the inverters may still be limited. Add the integration again and set the power limit to 100 %."
     }
   },
   "entity": {
@@ -185,7 +196,16 @@
     "number": {
       "power_limit": {
         "name": "Power limit"
+      },
+      "power_limit_kw": {
+        "name": "Power limit (kW)"
       }
+    }
+  },
+  "issues": {
+    "check_installation_power": {
+      "title": "Check the installation power of the APsystems ECU",
+      "description": "An inverter keeps delivering more than the power limit of {limit} % allows, also after the limit was sent again. The installation power under Configure is probably too low. This notice disappears when you change it, set a new limit or restart Home Assistant."
     }
   }
 }

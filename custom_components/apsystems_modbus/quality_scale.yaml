@@ -32,7 +32,9 @@ rules:
   config-entry-unloading: done
   docs-configuration-parameters: done
   docs-installation-parameters: done
-  entity-unavailable: done
+  entity-unavailable:
+    status: done
+    comment: Every entity follows the coordinator, except the power limit numbers. Those stay available on purpose, because Home Assistant skips actions on unavailable entities and a release must always be tried.
   integration-owner: done
   log-when-unavailable: done
   parallel-updates: done
@@ -64,8 +66,8 @@ rules:
   icon-translations: done
   reconfiguration-flow: done
   repair-issues:
-    status: todo
-    comment: A changed inverter on a known address is only logged; a repair issue would guide the user to reconfigure.
+    status: done
+    comment: An installation power that does not match the inverters raises a repair issue. A changed inverter on a known address is only logged, as it needs a reconfigure anyway.
   stale-devices: done
 
   # Platinum
