@@ -51,6 +51,8 @@ class EcuData:
     """When the ECU last reported different values."""
     timeouts: int = 0
     """Inverters that did not answer this cycle."""
+    cut_short: bool = False
+    """Whether the cycle stopped early because too many inverters were silent."""
 
 
 class EcuCoordinator(DataUpdateCoordinator[EcuData]):
@@ -112,12 +114,26 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
     async def _async_update_data(self) -> EcuData:
         data = EcuData()
         timeouts = 0
+        reconnected = False
         for unit_id, inverter in sorted(self.inverters.items()):
             if timeouts >= self._timeout_budget:
                 break
             async with self.write_lock:
                 try:
-                    report = await inverter.async_poll(Inverter.POLLED)
+                    try:
+                        report = await inverter.async_poll(Inverter.POLLED)
+                    except ModbusConnectionError as err:
+                        # A restart of the ECU leaves the open connection
+                        # dead, so the first request after it fails even when
+                        # the ECU answers again. One fresh connection usually
+                        # sorts that out at once.
+                        self.power_limit.note_silent_ecu()
+                        if reconnected:
+                            raise
+                        reconnected = True
+                        _LOGGER.debug("Connection lost (%s); reconnecting", err)
+                        await self._async_drop_link()
+                        report = await inverter.async_poll(Inverter.POLLED)
                 except ModbusConnectionError as err:
                     raise UpdateFailed(
                         translation_domain=DOMAIN,
@@ -136,8 +152,12 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             data.available.add(unit_id)
 
         data.timeouts = timeouts
+        data.cut_short = timeouts >= self._timeout_budget
+        if data.cut_short:
+            self.power_limit.note_silent_ecu()
         await self._pace(timeouts)
         if not data.available:
+            self.power_limit.note_silent_ecu()
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="no_inverter_answered",
@@ -170,11 +190,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         if timeouts >= self._timeout_budget:
             current = self.update_interval or self._base_interval
             self.update_interval = min(current * 2, MAX_BACKOFF)
-            try:
-                # A link that stopped answering is opened fresh next time.
-                await self.lead.modbus_unit.disconnect()
-            except ModbusError as err:
-                _LOGGER.debug("Closing the link failed: %s", err)
+            # A link that stopped answering is opened fresh next time.
+            await self._async_drop_link()
             if not self._degraded:
                 self._degraded = True
                 _LOGGER.warning(
@@ -189,6 +206,13 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             self._degraded = False
             self.update_interval = self._base_interval
             _LOGGER.info("The ECU is answering again; normal polling resumed")
+
+    async def _async_drop_link(self) -> None:
+        """Close the shared link; the next request opens a new one."""
+        try:
+            await self.lead.modbus_unit.disconnect()
+        except ModbusError as err:
+            _LOGGER.debug("Closing the link failed: %s", err)
 
     def _aggregate(self, data: EcuData) -> None:
         """Compute the ECU totals from the inverters read this cycle."""

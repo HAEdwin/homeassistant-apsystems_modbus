@@ -98,10 +98,15 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
 - At 0 each inverter still delivers about 20 to 30 W.
 - If a change does not reach the ECU, you get a message and the integration
   tries again by itself.
-- Sometimes an inverter does not follow a change. Check the power of each
-  inverter after 15 minutes. If one did not follow, set a different value,
-  wait 10 minutes, then set the value you want again.
-- The limit stays when Home Assistant stops.
+- An inverter sometimes misses a change, and a restart of the ECU clears the
+  limit. So the integration sends the limit again 15 and 75 minutes after a
+  change, and after the ECU restarts. For a few minutes it uses one percent
+  more or less, otherwise the ECU does not pass it on.
+- The limit stays when Home Assistant stops, and the integration picks it up
+  again when it starts.
+- If an inverter stays limited, set the limit to 100. If that does not help,
+  switch the ECU off for a minute. In our tests this cleared the limit on all
+  inverters.
 
 Example: no export at negative feed-in prices. Replace the entity IDs with
 yours.

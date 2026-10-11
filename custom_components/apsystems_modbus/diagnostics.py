@@ -58,6 +58,14 @@ async def async_get_config_entry_diagnostics(
             "last_rewrite": coordinator.power_limit.last_rewrite.isoformat()
             if coordinator.power_limit.last_rewrite
             else None,
+            "refreshing": coordinator.power_limit.refreshing,
+            "next_refresh": coordinator.power_limit.next_refresh.isoformat()
+            if coordinator.power_limit.next_refresh
+            else None,
+            "refresh_count": coordinator.power_limit.refresh_count,
+            "last_refresh": coordinator.power_limit.last_refresh.isoformat()
+            if coordinator.power_limit.last_refresh
+            else None,
         },
         "lifetime": {
             "lifetime_energy_wh": coordinator.ledger.lifetime,

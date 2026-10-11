@@ -38,4 +38,8 @@ async def test_diagnostics_are_redacted(
         "shown": 100,
         "deviations": 0,
         "last_rewrite": None,
+        "refreshing": False,
+        "next_refresh": None,
+        "refresh_count": 0,
+        "last_refresh": None,
     }

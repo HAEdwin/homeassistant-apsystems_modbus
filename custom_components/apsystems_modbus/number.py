@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Self
 
 from homeassistant.components.number import (
     NumberEntity,
@@ -12,6 +13,7 @@ from homeassistant.components.number import (
 from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 
 from .coordinator import ApsystemsConfigEntry
 from .entity import EcuEntity
@@ -42,12 +44,57 @@ async def async_setup_entry(
     async_add_entities([PowerLimitNumber(entry.runtime_data, POWER_LIMIT)])
 
 
-class PowerLimitNumber(EcuEntity, NumberEntity):
+@dataclass(slots=True)
+class StoredLimit(ExtraStoredData):
+    """The chosen limit, kept across a restart of Home Assistant."""
+
+    desired: int
+    entry_id: str
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the data to store."""
+        return {"desired": self.desired, "entry_id": self.entry_id}
+
+    @classmethod
+    def from_dict(cls, stored: dict[str, Any]) -> Self | None:
+        """Return the stored limit, or None when it is not usable."""
+        desired = stored.get("desired")
+        entry_id = stored.get("entry_id")
+        if (
+            type(desired) is not int
+            or not 0 <= desired <= NO_LIMIT
+            or not isinstance(entry_id, str)
+        ):
+            return None
+        return cls(desired, entry_id)
+
+
+class PowerLimitNumber(EcuEntity, NumberEntity, RestoreEntity):
     """Limit the output of all inverters, 100 % meaning no limit.
 
     The number shows what the ECU reports. Setting it writes to the ECU right
-    away; the integration then keeps the ECU on that value.
+    away; the integration then keeps the ECU on that value. The chosen value
+    is restored after a restart of Home Assistant, but only for the same
+    config entry: removing and adding the integration starts without one.
     """
+
+    async def async_added_to_hass(self) -> None:
+        """Take over the limit chosen before Home Assistant restarted."""
+        await super().async_added_to_hass()
+        if (extra := await self.async_get_last_extra_data()) is None:
+            return
+        stored = StoredLimit.from_dict(extra.as_dict())
+        if stored is None or stored.entry_id != self.coordinator.config_entry.entry_id:
+            return
+        self.coordinator.power_limit.restore(stored.desired)
+
+    @property
+    def extra_restore_state_data(self) -> StoredLimit | None:
+        """Remember the chosen limit for the next start."""
+        desired = self.coordinator.power_limit.desired
+        if desired is None:
+            return None
+        return StoredLimit(desired, self.coordinator.config_entry.entry_id)
 
     @property
     def available(self) -> bool:
