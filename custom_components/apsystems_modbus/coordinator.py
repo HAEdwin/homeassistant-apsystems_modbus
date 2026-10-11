@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
+import math
 
 from modbus_connection import ModbusConnectionError, ModbusError, ModbusTimeoutError
 
@@ -26,7 +27,7 @@ from .const import (
     MAX_TIMEOUTS_PER_CYCLE,
 )
 from .ecu import Inverter
-from .lifetime import EnergyLedger
+from .lifetime import MAX_DAILY_WH, EnergyLedger
 from .power_limit import PowerLimit
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class EcuData:
     power: float = 0.0
     """Sum of the AC power of the available inverters, in W."""
     energy_today: float | None = None
-    """Sum of the accepted daily counters in Wh."""
+    """Sum of the daily counters as the ECU reports them, in Wh."""
     online: int = 0
     """Inverters that are feeding in."""
     last_change: datetime | None = None
@@ -98,6 +99,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             for item in entry.data[CONF_INVERTERS]
         }
         """Configured serial number per unit id."""
+        self.daily: dict[int, float] = {}
+        """Last valid daily counter per unit id in Wh, as the ECU reports it."""
         self.power_limit = PowerLimit(self, lead)
         """The ECU-wide power limit, written and read back through ``lead``."""
         self._timeout_budget = min(MAX_TIMEOUTS_PER_CYCLE, len(inverters))
@@ -198,17 +201,18 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 data.power += power
             if measurements.is_online:
                 data.online += 1
-            if measurements.energy_today is not None:
-                self.ledger.record_daily(
-                    self.serials[unit_id], measurements.energy_today
-                )
-            snapshot[unit_id] = (measurements.energy_today, measurements.ac_power)
+            daily = measurements.energy_today
+            if daily is not None:
+                # The ledger guards the lifetime total against stray readings.
+                self.ledger.record_daily(self.serials[unit_id], daily)
+                # Energy today simply follows the ECU, including its nightly
+                # reset; only impossible values are left out.
+                if math.isfinite(daily) and 0 <= daily <= MAX_DAILY_WH:
+                    self.daily[unit_id] = daily
+            snapshot[unit_id] = (daily, measurements.ac_power)
 
-        # Daily counters as accepted by the ledger: stray readings are held back,
-        # and an inverter that did not answer counts with its last value.
-        counters = [self.ledger.today_of(serial) for serial in self.serials.values()]
-        known = [value for value in counters if value is not None]
-        data.energy_today = sum(known) if known else None
+        # An inverter that did not answer counts with its last value.
+        data.energy_today = sum(self.daily.values()) if self.daily else None
 
         self.ledger.record_power(data.power)
         self.ledger.finish_poll(complete=len(data.available) == len(self.inverters))

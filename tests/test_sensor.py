@@ -13,7 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apsystems_modbus.const import CONF_INVERTERS, DOMAIN
 
-from .conftest import INVERTERS
+from .conftest import INVERTERS, set_float32
 
 
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
@@ -234,3 +234,71 @@ async def test_lifetime_survives_removing_and_adding_again(
     await setup_entry(hass, again)
     lifetime = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
     assert float(lifetime.state) == pytest.approx(21_971.04, abs=0.001)
+
+
+async def test_energy_today_follows_the_ecu_and_lifetime_stays_guarded(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    lifetime = float(hass.states.get("sensor.apsystems_ecu_lifetime_energy").state)
+
+    # The ECU resets its daily counters during the night.
+    for unit_id in (1, 2):
+        set_float32(mock_ecu.for_unit(unit_id), 40154, 0.0)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert float(hass.states.get("sensor.apsystems_ecu_energy_today").state) == 0.0
+    assert (
+        float(hass.states.get("sensor.inverter_704000000001_energy_today").state) == 0.0
+    )
+    assert (
+        float(hass.states.get("sensor.apsystems_ecu_lifetime_energy").state) == lifetime
+    )
+
+    # After an ECU restart the old value comes back for a while: today shows it,
+    # the lifetime does not count it again.
+    set_float32(mock_ecu.for_unit(1), 40154, 554.08)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert float(
+        hass.states.get("sensor.inverter_704000000001_energy_today").state
+    ) == pytest.approx(0.554, abs=0.001)
+    assert (
+        float(hass.states.get("sensor.apsystems_ecu_lifetime_energy").state) == lifetime
+    )
+
+
+async def test_energy_today_has_no_statistics(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+
+    for entity_id in (
+        "sensor.apsystems_ecu_energy_today",
+        "sensor.inverter_704000000001_energy_today",
+    ):
+        assert "state_class" not in hass.states.get(entity_id).attributes, entity_id
+
+
+async def test_impossible_daily_counter_is_left_out(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+
+    set_float32(mock_ecu.for_unit(1), 40154, 3.0e9)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert float(
+        hass.states.get("sensor.inverter_704000000001_energy_today").state
+    ) == pytest.approx(0.554, abs=0.001)

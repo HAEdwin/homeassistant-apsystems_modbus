@@ -282,11 +282,13 @@ LEDGER_SENSORS: tuple[LedgerSensorDescription, ...] = (
     ),
 )
 
+# No state class: today's energy follows the ECU, including its nightly reset
+# and any odd reading, so it must not feed long-term statistics. Lifetime
+# energy is the guarded counter for that.
 INVERTER_ENERGY_TODAY = SensorEntityDescription(
     key="energy_today",
     translation_key="energy_today",
     device_class=SensorDeviceClass.ENERGY,
-    state_class=SensorStateClass.TOTAL_INCREASING,
     native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
     # Shown like EMA (9.81 kWh); the state keeps Wh resolution.
     suggested_display_precision=2,
@@ -395,16 +397,12 @@ class LedgerSensor(EcuEntity, SensorEntity):
 
 
 class InverterEnergyTodaySensor(InverterEntity, SensorEntity):
-    """Daily counter of one inverter as accepted by the ledger.
-
-    A stray low reading is held back, so it never reaches the statistics as a
-    meter reset; the new day starts once the inverter produces again.
-    """
+    """Daily counter of one inverter as the ECU reports it."""
 
     @property
     def native_value(self) -> StateType:
         """Return today's energy of this inverter."""
-        return _rounded(_kwh(self.coordinator.ledger.today_of(self.serial)))
+        return _rounded(_kwh(self.coordinator.daily.get(self.unit_id)))
 
 
 class InverterLifetimeSensor(InverterEntity, SensorEntity):

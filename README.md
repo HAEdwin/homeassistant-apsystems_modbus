@@ -128,8 +128,8 @@ automation:
 
 - Values change when the ECU fetches new data from the inverters over Zigbee,
   about every 5 minutes. Daily totals can differ about 1 % from the EMA app.
-- At night inverters read 0 V and 0 Hz. Energy today keeps its value until the
-  inverters produce again.
+- At night inverters read 0 V and 0 Hz. Energy today follows the ECU, which
+  resets it during the night.
 - A silent inverter becomes unavailable, but the totals keep its share.
   If the ECU stops answering, polling slows down and recovers by itself.
 

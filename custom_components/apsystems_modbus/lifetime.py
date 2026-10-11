@@ -110,11 +110,6 @@ class EnergyLedger:
         """Lifetime energy in Wh; never lower than reported before."""
         return self._reported
 
-    def today_of(self, serial: str) -> float | None:
-        """Return the accepted daily counter of one inverter in Wh."""
-        counter = self._counters.get(serial)
-        return None if counter is None else counter.last
-
     def lifetime_of(self, serial: str) -> float | None:
         """Lifetime energy of one inverter in Wh, without the start offset."""
         counter = self._counters.get(serial)
