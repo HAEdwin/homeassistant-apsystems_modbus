@@ -152,6 +152,8 @@ async def test_write_export_limit(mock_ecu: MockModbusConnection) -> None:
         (40189, [100]),
         (40193, [1]),
     ]
+    # The ECU only answers "write multiple registers" (function code 16).
+    assert {w.function_code for w in writes} == {0x10}
     assert all(w.address != GRID_CONNECTION_ADDRESS for w in writes)
     await inverter.async_poll(("measurements",))
     assert inverter.measurements.export_limit == 10.0

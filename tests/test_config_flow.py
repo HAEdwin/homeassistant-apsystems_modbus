@@ -15,7 +15,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apsystems_modbus.config_flow import parse_unit_ids
 from custom_components.apsystems_modbus.const import (
-    CONF_ECU_ID,
     CONF_INVERTERS,
     CONF_UNIT_IDS,
     DOMAIN,
@@ -58,11 +57,13 @@ async def test_user_flow_with_search(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "2"
-    assert "704000000001" in result["description_placeholders"]["inverters"]
+    # One table row per inverter: ID, address, model, as in EMA Manager.
+    assert result["description_placeholders"]["inverters"].splitlines() == [
+        "| 704000000001 | 1 | DS3 |",
+        "| 703000000002 | 2 | DS3 |",
+    ]
 
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_ECU_ID: ""}
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "APsystems ECU"
     assert result["result"].unique_id == "704000000001"
@@ -73,7 +74,7 @@ async def test_user_flow_with_search(
     }
 
 
-async def test_user_flow_with_addresses_and_ecu_id(
+async def test_user_flow_with_addresses(
     hass: HomeAssistant, mock_ecu: MockModbusConnection
 ) -> None:
     result = await start_user_flow(hass)
@@ -84,14 +85,11 @@ async def test_user_flow_with_addresses_and_ecu_id(
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "1"
 
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_ECU_ID: "216000000000"}
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "ECU 216000000000"
-    # The ECU id is only a name; the first inverter identifies the ECU.
+    assert result["title"] == "APsystems ECU"
+    # The first inverter identifies the ECU.
     assert result["result"].unique_id == "703000000002"
-    assert result["data"][CONF_ECU_ID] == "216000000000"
     assert [item["unit_id"] for item in result["data"][CONF_INVERTERS]] == [2]
 
 
@@ -550,32 +548,14 @@ async def test_options_unchanged_values_change_nothing(
     )
 
 
-async def test_invalid_ecu_id(
-    hass: HomeAssistant, mock_ecu: MockModbusConnection
-) -> None:
-    result = await start_user_flow(hass)
-    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
-
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_ECU_ID: "../2160"}
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {CONF_ECU_ID: "invalid_ecu_id"}
-
-
-async def test_reconfigure_keeps_name_and_ecu_id(
+async def test_reconfigure_keeps_the_name(
     hass: HomeAssistant, mock_ecu: MockModbusConnection
 ) -> None:
     entry = MockConfigEntry(
         domain=DOMAIN,
-        title="ECU 216000000000",
+        title="Solar ECU",
         unique_id="704000000001",
-        data={
-            CONF_HOST: HOST,
-            CONF_PORT: 502,
-            CONF_INVERTERS: INVERTERS,
-            CONF_ECU_ID: "216000000000",
-        },
+        data={CONF_HOST: HOST, CONF_PORT: 502, CONF_INVERTERS: INVERTERS},
     )
     entry.add_to_hass(hass)
     result = await entry.start_reconfigure_flow(hass)
@@ -584,8 +564,7 @@ async def test_reconfigure_keeps_name_and_ecu_id(
     await hass.async_block_till_done()
 
     assert result["reason"] == "reconfigure_successful"
-    assert entry.title == "ECU 216000000000"
-    assert entry.data[CONF_ECU_ID] == "216000000000"
+    assert entry.title == "Solar ECU"
 
 
 async def test_reconfigure_to_another_ecu_is_refused(

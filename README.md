@@ -78,7 +78,6 @@ Devices & services*, or add it yourself:
 | Host | IP address of the ECU |
 | Port | 502 |
 | Inverter addresses | The Modbus addresses from EMA Manager, like `1-8` or `1, 2, 5`. Leave empty to find them automatically. |
-| ECU ID (optional) | The 12-digit number on the ECU sticker. The device is then named *ECU 2160…* instead of *APsystems ECU*. |
 | Lifetime energy (optional) | Your total from the EMA app in kWh. It counts on from there. Leave empty to start at 0. |
 
 Under *Configure* you can change the poll interval and correct the lifetime

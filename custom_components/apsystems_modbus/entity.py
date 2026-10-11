@@ -7,11 +7,9 @@ from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, Device
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_ECU_ID, DOMAIN, InverterConfig
+from .const import DOMAIN, InverterConfig
 from .coordinator import ApsystemsConfigEntry, EcuCoordinator
 from .ecu import MANUFACTURER, Inverter
-
-ECU_R_ID_PREFIX = "2160"
 
 
 def ecu_identifier(entry: ApsystemsConfigEntry) -> tuple[str, str]:
@@ -21,13 +19,11 @@ def ecu_identifier(entry: ApsystemsConfigEntry) -> tuple[str, str]:
 
 def ecu_device_info(entry: ApsystemsConfigEntry) -> DeviceInfo:
     """Describe the ECU; it does not report its own model or serial over Modbus."""
-    ecu_id: str | None = entry.data.get(CONF_ECU_ID)
     info = DeviceInfo(
         identifiers={ecu_identifier(entry)},
         name=entry.title,
         manufacturer=MANUFACTURER,
-        model="ECU-R" if ecu_id and ecu_id.startswith(ECU_R_ID_PREFIX) else "ECU",
-        serial_number=ecu_id,
+        model="ECU",
     )
     if mac := entry.data.get(CONF_MAC):
         info["connections"] = {(CONNECTION_NETWORK_MAC, mac)}

@@ -12,6 +12,7 @@ from .const import CONF_ECU_ID, CONF_SERIAL_NUMBER
 from .coordinator import ApsystemsConfigEntry
 from .ecu import Inverter
 
+# CONF_ECU_ID: entries made before the field was removed may still hold it.
 TO_REDACT = {CONF_HOST, CONF_MAC, CONF_ECU_ID, CONF_SERIAL_NUMBER}
 
 

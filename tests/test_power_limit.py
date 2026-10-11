@@ -58,13 +58,13 @@ def record_writes(unit: MockModbusUnit) -> list[tuple[int, int]]:
 def count_write_attempts(unit: MockModbusUnit) -> list[int]:
     """Collect the address of every write attempt, including failing ones."""
     attempts: list[int] = []
-    original = unit.write_register
+    original = unit.write_registers
 
-    async def write_register(address: int, value: int) -> None:
+    async def write_registers(address: int, values: list[int]) -> None:
         attempts.append(address)
-        await original(address, value)
+        await original(address, values)
 
-    unit.write_register = write_register  # type: ignore[method-assign]
+    unit.write_registers = write_registers  # type: ignore[method-assign]
     return attempts
 
 
@@ -697,6 +697,8 @@ async def test_grid_connection_is_never_written(
 
     assert events
     assert all(event.address != GRID_CONNECTION_ADDRESS for event in events)
+    # The ECU only answers "write multiple registers" (function code 16).
+    assert {event.function_code for event in events} == {0x10}
     # The autouse fixture fails this test if 40188 was even attempted.
 
 

@@ -36,13 +36,11 @@
       },
       "confirm": {
         "title": "Inverters found: {count}",
-        "description": "{inverters}\n\nCompare the addresses and serial numbers with the Modbus settings in EMA Manager.",
+        "description": "| ID | Address | Model |\n|---|---|---|\n{inverters}",
         "data": {
-          "ecu_id": "ECU ID (optional)",
           "lifetime_energy": "Lifetime energy (optional)"
         },
         "data_description": {
-          "ecu_id": "The number on the ECU label, also shown in EMA Manager. Used for the device name. Without it, the first inverter identifies the ECU.",
           "lifetime_energy": "Total energy from the EMA app, in kWh. The lifetime counter continues from here. Leave empty to start at 0."
         }
       }
@@ -58,8 +56,7 @@
       "ecu_busy": "The ECU stopped answering during the search. Stop other Modbus clients, wait five minutes and try again.",
       "unsupported_layout": "The register layout differs from the tested ECU-R. Please share a register dump in an issue.",
       "invalid_unit_ids": "Enter addresses between 1 and 247, for example 1-8 or 1, 2, 5.",
-      "unknown": "Unexpected error",
-      "invalid_ecu_id": "Enter the 12 digits of the ECU ID from the label, or leave it empty."
+      "unknown": "Unexpected error"
     },
     "abort": {
       "already_configured": "Device is already configured",

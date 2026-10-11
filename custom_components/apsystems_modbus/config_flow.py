@@ -37,7 +37,6 @@ from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .const import (
-    CONF_ECU_ID,
     CONF_INVERTERS,
     CONF_LIFETIME_ENERGY,
     CONF_MODEL,
@@ -76,8 +75,6 @@ MIN_UNIT_ID = 1
 MAX_UNIT_ID = 247
 
 _RANGE = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d+))?\s*$")
-_ECU_ID = re.compile(r"^\d{12}$")
-"""The ECU ID on the label: twelve digits, for example 2160xxxxxxxx."""
 
 _KWH_SELECTOR = selector.NumberSelector(
     selector.NumberSelectorConfig(
@@ -547,21 +544,14 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_update_reload_and_abort(
                     entry, data={**entry.data, **data}
                 )
-            return self._show_found(probatio.Schema({}), {})
+            return self._show_found(probatio.Schema({}))
 
-        errors: dict[str, str] = {}
         if user_input is not None and not self._show_confirm:
-            ecu_id = user_input.get(CONF_ECU_ID, "").strip()
-            if ecu_id and not _ECU_ID.match(ecu_id):
-                errors[CONF_ECU_ID] = "invalid_ecu_id"
-            else:
-                if ecu_id:
-                    data[CONF_ECU_ID] = ecu_id
-                return await self._async_create(data, ecu_id, user_input)
-        return await self._show_confirm_form(user_input, errors)
+            return await self._async_create(data, user_input)
+        return await self._show_confirm_form(user_input)
 
     async def _async_create(
-        self, data: dict[str, Any], ecu_id: str, user_input: Mapping[str, Any]
+        self, data: dict[str, Any], user_input: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Create the entry; the ECU is identified by its first inverter."""
         unique_id = self._found[0].serial_number
@@ -572,43 +562,36 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
             moved[CONF_MAC] = self._mac
         self._abort_if_unique_id_configured(updates=moved)
         await self._apply_start_value(unique_id, user_input.get(CONF_LIFETIME_ENERGY))
-        title = f"ECU {ecu_id}" if ecu_id else "APsystems ECU"
-        return self.async_create_entry(title=title, data=data)
+        return self.async_create_entry(title="APsystems ECU", data=data)
 
     async def _show_confirm_form(
-        self, user_input: Mapping[str, Any] | None, errors: dict[str, str]
+        self, user_input: Mapping[str, Any] | None
     ) -> ConfigFlowResult:
-        """Ask for the optional ECU id and the lifetime energy so far."""
-        if self._stored_lifetime is None and not errors:
+        """Show what was found and ask for the lifetime energy so far."""
+        if self._stored_lifetime is None:
             stored = await async_stored_lifetime(
                 self.hass, self._found[0].serial_number
             )
             self._stored_lifetime = None if stored is None else round(stored / 1000, 1)
         schema = self.add_suggested_values_to_schema(
-            probatio.Schema(
-                {
-                    probatio.Optional(CONF_ECU_ID, default=""): cv.string,
-                    probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR,
-                }
-            ),
+            probatio.Schema({probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR}),
             {CONF_LIFETIME_ENERGY: self._stored_lifetime}
             if user_input is None or self._show_confirm
             else dict(user_input),
         )
-        return self._show_found(schema, errors)
+        return self._show_found(schema)
 
-    def _show_found(
-        self, schema: probatio.Schema, errors: dict[str, str]
-    ) -> ConfigFlowResult:
+    def _show_found(self, schema: probatio.Schema) -> ConfigFlowResult:
+        # Table rows in the order and columns of EMA Manager (ID, address),
+        # plus the model the ECU reports.
         rows = "\n".join(
-            f"- {item.unit_id}: {item.model} {item.serial_number}"
+            f"| {item.serial_number} | {item.unit_id} | {item.model} |"
             for item in self._found
         )
         self._show_confirm = False
         return self.async_show_form(
             step_id="confirm",
             data_schema=schema,
-            errors=errors,
             description_placeholders={
                 "count": str(len(self._found)),
                 "inverters": rows,

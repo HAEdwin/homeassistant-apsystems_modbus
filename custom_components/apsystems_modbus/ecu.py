@@ -189,10 +189,18 @@ class Measurements(Component):
     temperature = float32(40162, unit="°C")
 
     grid_connection = integer(GRID_CONNECTION_ADDRESS, signed=False, nan=0xFFFF)
+    # The ECU ignores "write single register" (function code 6) and only
+    # accepts "write multiple registers" (16), even for one register.
     export_limit = gauge(
-        EXPORT_LIMIT_ADDRESS, 0.1, signed=False, writable=_validate_export_limit
+        EXPORT_LIMIT_ADDRESS,
+        0.1,
+        signed=False,
+        writable=_validate_export_limit,
+        force_fc16=True,
     )
-    export_limit_enabled_raw = raw_register(EXPORT_LIMIT_ENABLED_ADDRESS, writable=True)
+    export_limit_enabled_raw = raw_register(
+        EXPORT_LIMIT_ENABLED_ADDRESS, writable=True, force_fc16=True
+    )
 
     dc_voltage_1 = float32(40214, unit="V")
     dc_voltage_2 = float32(40216, unit="V")

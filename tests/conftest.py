@@ -115,14 +115,21 @@ def never_write_grid_connection(
     attempts: list[tuple[int, int]] = []
 
     def guard(unit: MockModbusUnit) -> None:
-        original = unit.write_register
+        single = unit.write_register
+        multiple = unit.write_registers
 
         async def write_register(address: int, value: int) -> None:
             if address == GRID_CONNECTION_ADDRESS:
                 attempts.append((unit.unit_id, address))
-            await original(address, value)
+            await single(address, value)
+
+        async def write_registers(address: int, values: list[int]) -> None:
+            if address <= GRID_CONNECTION_ADDRESS < address + len(values):
+                attempts.append((unit.unit_id, address))
+            await multiple(address, values)
 
         unit.write_register = write_register  # type: ignore[method-assign]
+        unit.write_registers = write_registers  # type: ignore[method-assign]
 
     for unit_id in range(1, 17):
         guard(mock_modbus_connection.for_unit(unit_id))

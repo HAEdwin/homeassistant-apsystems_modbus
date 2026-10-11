@@ -36,13 +36,11 @@
       },
       "confirm": {
         "title": "Gevonden omvormers: {count}",
-        "description": "{inverters}\n\nVergelijk de adressen en serienummers met de Modbus-instellingen in EMA Manager.",
+        "description": "| ID | Adres | Model |\n|---|---|---|\n{inverters}",
         "data": {
-          "ecu_id": "ECU-ID (optioneel)",
           "lifetime_energy": "Totale opbrengst (optioneel)"
         },
         "data_description": {
-          "ecu_id": "Het nummer op het label van de ECU, ook zichtbaar in EMA Manager. Wordt gebruikt voor de apparaatnaam. Zonder dit nummer identificeert de eerste omvormer de ECU.",
           "lifetime_energy": "De totale opbrengst uit de EMA-app, in kWh. De lifetime-teller gaat vanaf hier verder. Leeg laten om bij 0 te beginnen."
         }
       }
@@ -58,8 +56,7 @@
       "ecu_busy": "De ECU stopte met antwoorden tijdens het zoeken. Stop andere Modbus-clients, wacht vijf minuten en probeer het opnieuw.",
       "unsupported_layout": "De registerindeling wijkt af van de geteste ECU-R. Deel een registerdump in een issue.",
       "invalid_unit_ids": "Vul adressen tussen 1 en 247 in, bijvoorbeeld 1-8 of 1, 2, 5.",
-      "unknown": "Onverwachte fout",
-      "invalid_ecu_id": "Vul de 12 cijfers van het ECU-ID van het label in, of laat het leeg."
+      "unknown": "Onverwachte fout"
     },
     "abort": {
       "already_configured": "Apparaat is al geconfigureerd",
