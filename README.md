@@ -16,7 +16,7 @@ Features:
   energy today, lifetime energy for the Energy dashboard, highest power ever
   measured and inverters online.
 - **One device per microinverter** with its own power, energy today, voltage,
-  current, frequency, temperature, DC values per panel, status and event code.
+  current, frequency, temperature, power per panel, status and event code.
 - **Control: power limit.** Curtail the output of all inverters, in percent
   or in kW, by hand or from an automation. With a dynamic tariff you can go
   to zero export at negative prices and back to full power when they recover.
@@ -78,8 +78,8 @@ Devices & services*, or add it yourself:
 | Host | IP address of the ECU |
 | Port | 502 |
 | Inverter addresses | The Modbus addresses from EMA Manager, like `1-8` or `1, 2, 5`. Leave empty to find them automatically. |
+| Installation power (optional) | Output of all inverters together in kW, for example 8 × 0.73 = 5.8 for DS3-L or 8 × 0.88 = 7.0 for DS3. Leave empty to set the limit in percent only. |
 | Lifetime energy (optional) | Your total from the EMA app in kWh. It counts on from there. Leave empty to start at 0. |
-| Installation power (optional) | Output of all inverters together in kW, for example 5.8 for eight DS3-L of 730 W. Not the peak power of the panels. Only for one inverter type. |
 
 Under *Configure* you can change the poll interval, enter the installation
 power and correct the lifetime energy and lifetime peak power. A correction

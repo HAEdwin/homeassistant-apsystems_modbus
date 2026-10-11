@@ -38,12 +38,12 @@
         "title": "Gevonden omvormers: {count}",
         "description": "| ID | Adres | Model |\n|---|---|---|\n{inverters}",
         "data": {
-          "lifetime_energy": "Totale opbrengst (optioneel)",
-          "installation_power": "Installatievermogen (optioneel)"
+          "installation_power": "Installatievermogen (optioneel)",
+          "lifetime_energy": "Totale opbrengst (optioneel)"
         },
         "data_description": {
-          "lifetime_energy": "De totale opbrengst uit de EMA-app, in kWh. De lifetime-teller gaat vanaf hier verder. Leeg laten om bij 0 te beginnen.",
-          "installation_power": "Het vermogen van alle omvormers samen, in kW. Met {count} DS3-L van 0.73 kW is dat {example_kw} kW. Niet het piekvermogen van de panelen. Alleen voor één type omvormer. Hiermee stel je de limiet ook in kW in, en merkt de integratie een omvormer op die de limiet negeert."
+          "installation_power": "Vermogen van alle omvormers samen, bijvoorbeeld {count} × 0,73 = {ds3_l_kw} kW voor DS3-L of {count} × 0,88 = {ds3_kw} kW voor DS3. Leeg laten kan, dan stel je de limiet alleen in procenten in.",
+          "lifetime_energy": "De totale opbrengst uit de EMA-app, in kWh. De lifetime-teller gaat vanaf hier verder. Leeg laten om bij 0 te beginnen."
         }
       }
     },
@@ -59,7 +59,7 @@
       "unsupported_layout": "De registerindeling wijkt af van de geteste ECU-R. Deel een registerdump in een issue.",
       "invalid_unit_ids": "Vul adressen tussen 1 en 247 in, bijvoorbeeld 1-8 of 1, 2, 5.",
       "unknown": "Onverwachte fout",
-      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {example_kw}."
+      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {ds3_l_kw}."
     },
     "abort": {
       "already_configured": "Apparaat is al geconfigureerd",
@@ -84,12 +84,12 @@
           "scan_interval": "Seconden tussen twee uitlezingen. De ECU ververst zijn waarden maar ongeveer elke 5 minuten, dus lager geeft alleen meer belasting.",
           "lifetime_energy": "Alleen aanpassen om de teller te corrigeren. Hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur. Dat uur kun je aanpassen onder Ontwikkelhulpmiddelen → Statistieken.",
           "peak_power": "Hoogste totaalvermogen tot nu toe. Zet op 0 om opnieuw te beginnen.",
-          "installation_power": "Het vermogen van alle omvormers samen, in kW. Met {count} DS3-L van 0.73 kW is dat {example_kw} kW. Niet het piekvermogen van de panelen. Alleen voor één type omvormer. Hiermee stel je de limiet ook in kW in, en merkt de integratie een omvormer op die de limiet negeert."
+          "installation_power": "Vermogen van alle omvormers samen, bijvoorbeeld {count} × 0,73 = {ds3_l_kw} kW voor DS3-L of {count} × 0,88 = {ds3_kw} kW voor DS3. Leeg laten kan, dan stel je de limiet alleen in procenten in."
         }
       }
     },
     "error": {
-      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {example_kw}."
+      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {ds3_l_kw}."
     }
   },
   "exceptions": {

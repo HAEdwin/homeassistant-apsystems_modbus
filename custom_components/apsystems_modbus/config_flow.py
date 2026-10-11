@@ -31,7 +31,7 @@ from homeassistant.config_entries import (
     OptionsFlowWithReload,
 )
 from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT, CONF_SCAN_INTERVAL
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, selector
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
@@ -98,7 +98,10 @@ _KW_SELECTOR = selector.NumberSelector(
     )
 )
 DS3_L_KW = 0.73
-"""Output of a DS3-L, the most common type, for the example under the field."""
+DS3_KW = 0.88
+"""Output of a DS3-L and a DS3. The ECU reports both as DS3."""
+COMMA_LANGUAGES = ("nl",)
+"""Languages of the shipped translations that write 5,8 instead of 5.8."""
 
 
 def _installation_power_error(kw: float | None, inverters: int) -> str | None:
@@ -113,11 +116,17 @@ def _installation_power_error(kw: float | None, inverters: int) -> str | None:
     return "invalid_installation_power"
 
 
-def _power_placeholders(inverters: int) -> dict[str, str]:
-    """Return the example under the installation power field."""
+def _power_placeholders(hass: HomeAssistant, inverters: int) -> dict[str, str]:
+    """Return the example totals for both DS3 types.
+
+    Home Assistant only uses a translation with the same placeholders as the
+    English text, so the decimal mark is chosen here, from its language.
+    """
+    mark = "," if hass.config.language.startswith(COMMA_LANGUAGES) else "."
     return {
         "count": str(inverters),
-        "example_kw": f"{round(inverters * DS3_L_KW, 1)}",
+        "ds3_l_kw": f"{inverters * DS3_L_KW:.1f}".replace(".", mark),
+        "ds3_kw": f"{inverters * DS3_KW:.1f}".replace(".", mark),
     }
 
 
@@ -608,7 +617,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _show_confirm_form(
         self, user_input: Mapping[str, Any] | None, errors: dict[str, str]
     ) -> ConfigFlowResult:
-        """Show what was found and ask for the lifetime energy and power."""
+        """Show what was found and ask for the power and lifetime energy."""
         if self._stored_lifetime is None:
             stored = await async_stored_lifetime(
                 self.hass, self._found[0].serial_number
@@ -617,8 +626,8 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         schema = self.add_suggested_values_to_schema(
             probatio.Schema(
                 {
-                    probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR,
                     probatio.Optional(CONF_INSTALLATION_POWER): _KW_SELECTOR,
+                    probatio.Optional(CONF_LIFETIME_ENERGY): _KWH_SELECTOR,
                 }
             ),
             {CONF_LIFETIME_ENERGY: self._stored_lifetime}
@@ -643,7 +652,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "inverters": rows,
-                **_power_placeholders(len(self._found)),
+                **_power_placeholders(self.hass, len(self._found)),
             },
         )
 
@@ -743,7 +752,7 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
                 self._options_schema(fields), suggested
             ),
             errors=errors,
-            description_placeholders=_power_placeholders(inverters),
+            description_placeholders=_power_placeholders(self.hass, inverters),
         )
 
     async def _apply_corrections(self, user_input: Mapping[str, Any]) -> None:

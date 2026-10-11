@@ -697,7 +697,9 @@ async def test_installation_power_at_setup(
     result = await start_user_flow(hass)
     result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
     # The example under the field uses the number of inverters found.
-    assert result["description_placeholders"]["example_kw"] == "1.5"
+    placeholders = result["description_placeholders"]
+    assert placeholders["ds3_l_kw"] == "1.5"
+    assert placeholders["ds3_kw"] == "1.8"
 
     # Watts typed into the kW field are caught.
     result = await hass.config_entries.flow.async_configure(
@@ -755,3 +757,12 @@ async def test_options_installation_power(
     )
     await hass.async_block_till_done()
     assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 300}
+
+
+async def test_example_uses_a_comma_in_dutch(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    await hass.config.async_update(language="nl")
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["description_placeholders"]["ds3_l_kw"] == "1,5"

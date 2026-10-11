@@ -1620,7 +1620,7 @@ async def test_technical_sensors_are_diagnostic(
     registry = er.async_get(hass)
     for entity_id in (
         "sensor.inverter_703000000002_ac_voltage",
-        "sensor.inverter_703000000002_dc_power_1",
+        "sensor.inverter_703000000002_panel_1_power",
         "sensor.inverter_703000000002_temperature",
     ):
         assert (

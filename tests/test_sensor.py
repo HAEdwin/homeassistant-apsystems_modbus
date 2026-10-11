@@ -69,17 +69,17 @@ async def test_inverter_sensors(
     # States carry no float32 noise: at most three decimals.
     for key in (
         "ac_current",
-        "dc_voltage_1",
-        "dc_current_2",
-        "dc_power_1",
+        "panel_1_voltage",
+        "panel_2_current",
+        "panel_1_power",
         "energy_today",
     ):
         decimals = hass.states.get(f"{prefix}{key}").state.partition(".")[2]
         assert len(decimals) <= 3, key
-    assert float(hass.states.get(f"{prefix}dc_voltage_1").state) == pytest.approx(
+    assert float(hass.states.get(f"{prefix}panel_1_voltage").state) == pytest.approx(
         34.0, abs=0.1
     )
-    assert float(hass.states.get(f"{prefix}dc_power_2").state) == pytest.approx(
+    assert float(hass.states.get(f"{prefix}panel_2_power").state) == pytest.approx(
         115.0, abs=1
     )
 
@@ -92,7 +92,7 @@ async def test_channels_beyond_model_and_extras_are_disabled(
     await setup_entry(hass, mock_config_entry)
     registry = er.async_get(hass)
 
-    enabled = registry.async_get("sensor.inverter_704000000001_dc_voltage_2")
+    enabled = registry.async_get("sensor.inverter_704000000001_panel_2_voltage")
     assert enabled is not None
     assert enabled.disabled_by is None
 
