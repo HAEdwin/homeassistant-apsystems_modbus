@@ -22,11 +22,9 @@ from .const import (
     CONF_UNIT_ID,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    MAX_BACKOFF,
     MAX_INVERTER_POWER,
     MAX_TIMEOUTS_PER_CYCLE,
     MIN_POLL_GAP,
-    RETRY_AFTER_FAILURE,
     ROUND_PERIOD,
     SCAN_INTERVAL_CHOICES,
     SETTLE_BASE,
@@ -93,15 +91,14 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
 
     The ECU is a small device that overloads easily. Each cycle reads the
     inverters one after another; after ``MAX_TIMEOUTS_PER_CYCLE`` unanswered
-    inverters the rest of the cycle is skipped and the link is recycled. The
-    next poll follows after two minutes, about the time the ECU needs to
-    restart, and from then on the wait doubles, up to ``MAX_BACKOFF``, until
-    a cycle completes. A pending write is let through between two inverters
-    via ``write_lock``.
+    inverters the rest of the cycle is skipped and the link is recycled. A
+    pending write is let through between two inverters via ``write_lock``.
 
     The ECU fetches new values from the inverters every five minutes, on the
-    clock. A completed cycle plans the next one just after the coming round,
-    so new values reach Home Assistant within about a minute and a half.
+    clock. Every cycle plans the next one just after a coming round, so new
+    values reach Home Assistant within about a minute and a half. While the
+    ECU does not answer, that is every round, whatever the chosen interval,
+    which never asks more of the ECU than normal polling does.
     """
 
     config_entry: ApsystemsConfigEntry
@@ -184,7 +181,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                         await self._async_drop_link()
                         report = await inverter.async_poll(Inverter.POLLED)
                 except ModbusConnectionError as err:
-                    await self._async_back_off()
+                    await self._async_note_failure()
                     raise UpdateFailed(
                         translation_domain=DOMAIN,
                         translation_key="connection_lost",
@@ -204,7 +201,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         data.cut_short = timeouts >= self._timeout_budget
         if data.cut_short or not data.available:
             self.power_limit.note_silent_ecu()
-            await self._async_back_off()
+            await self._async_note_failure()
         else:
             self._recover()
         if not data.available:
@@ -234,28 +231,25 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             )
         return False
 
-    async def _async_back_off(self) -> None:
-        """Poll again soon after a first failure, then less and less often."""
+    async def _async_note_failure(self) -> None:
+        """Try again after every round until the ECU answers again."""
         if not self._degraded:
             self._degraded = True
-            self.update_interval = RETRY_AFTER_FAILURE
             _LOGGER.warning(
-                "The ECU did not answer. Trying again in %s, then less often "
-                "until it responds",
-                RETRY_AFTER_FAILURE,
+                "The ECU did not answer. Trying again after every round of "
+                "the ECU until it responds"
             )
-        else:
-            current = self.update_interval or RETRY_AFTER_FAILURE
-            self.update_interval = min(current * 2, MAX_BACKOFF)
+        self._plan_next_poll()
         # A link that stopped answering is opened fresh next time.
         await self._async_drop_link()
 
     def _plan_next_poll(self) -> None:
-        """Poll next just after the coming ECU round, unless backing off."""
-        if not self._degraded:
-            self.update_interval = until_next_poll(
-                dt_util.utcnow(), self.interval, self.settle
-            )
+        """Poll next just after a coming ECU round.
+
+        The chosen interval while the ECU answers, every round while not.
+        """
+        interval = ROUND_PERIOD if self._degraded else self.interval
+        self.update_interval = until_next_poll(dt_util.utcnow(), interval, self.settle)
 
     def _recover(self) -> None:
         """Return to the rhythm of the ECU once a cycle completes again.

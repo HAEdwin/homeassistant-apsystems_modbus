@@ -1,6 +1,5 @@
 """Constants for the APsystems Modbus integration."""
 
-from datetime import timedelta
 from typing import TypedDict
 
 DOMAIN = "apsystems_modbus"
@@ -46,10 +45,6 @@ MAX_TIMEOUTS_PER_CYCLE = 2
 """After this many unanswered inverters in one cycle the rest is skipped."""
 MAX_INVERTER_POWER = 5000
 """Watts no microinverter reaches; a higher reading is not counted in totals."""
-MAX_BACKOFF = timedelta(minutes=15)
-"""Longest poll interval while the ECU is not responding."""
-RETRY_AFTER_FAILURE = timedelta(minutes=2)
-"""Wait after the first failed poll; about the time the ECU needs to restart."""
 MIN_POWER_PER_INVERTER = 0.2
 MAX_POWER_PER_INVERTER = 2.5
 """Plausible output of one microinverter in kW, to check the installation power."""

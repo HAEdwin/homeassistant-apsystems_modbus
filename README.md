@@ -150,8 +150,8 @@ automation:
 - At night inverters read 0 V and 0 Hz. Energy today follows the ECU, which
   resets it during the night.
 - A silent inverter becomes unavailable, but the totals keep its share.
-  If the ECU stops answering, the integration tries again after two minutes,
-  then less often, and recovers by itself.
+  If the ECU stops answering, the integration tries again after every round
+  of the ECU and recovers by itself.
 
 ## Troubleshooting
 

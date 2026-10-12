@@ -13,6 +13,7 @@ from modbus_connection.mock import MockModbusConnection
 import pytest
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -25,8 +26,7 @@ from custom_components.apsystems_modbus.const import (
     CONF_MODEL,
     CONF_SERIAL_NUMBER,
     CONF_UNIT_ID,
-    MAX_BACKOFF,
-    RETRY_AFTER_FAILURE,
+    ROUND_PERIOD,
 )
 from custom_components.apsystems_modbus.coordinator import (
     EcuCoordinator,
@@ -45,13 +45,17 @@ def no_platforms() -> None:
         yield
 
 
-def assert_next_poll_after_a_round(coordinator: EcuCoordinator) -> None:
-    """The next poll is planned just after an ECU round, as a normal cycle does."""
+def assert_next_poll_after_a_round(
+    coordinator: EcuCoordinator, interval: int | None = None
+) -> None:
+    """The next poll is planned just after an ECU round, within ``interval``."""
+    interval = interval or coordinator.interval
     assert coordinator.update_interval is not None
     due = dt_util.utcnow() + coordinator.update_interval
-    phase = (due.timestamp() - coordinator.settle) % coordinator.interval
-    assert min(phase, coordinator.interval - phase) < 1
-    assert coordinator.update_interval >= timedelta(seconds=60)
+    phase = (due.timestamp() - coordinator.settle) % interval
+    assert min(phase, interval - phase) < 1
+    assert timedelta(seconds=60) <= coordinator.update_interval
+    assert coordinator.update_interval <= timedelta(seconds=interval + 60)
 
 
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
@@ -193,20 +197,15 @@ async def test_timeout_budget_skips_rest_and_backs_off(
     # Units 2 and 3 timed out, so unit 4 was not even asked this cycle.
     assert coordinator.data.available == {1}
     assert mock_ecu.for_unit(4).read_events == []
-    # The first failure is retried soon: the ECU may just be restarting.
-    assert coordinator.update_interval == RETRY_AFTER_FAILURE
+    # A failed cycle is retried just after the next round.
+    assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
     # The daily total keeps its last complete value instead of dipping.
     assert coordinator.data.energy_today == pytest.approx(554.08 + 3 * 541.79, abs=0.05)
 
-    # Still silent: from then on less and less often.
-    await coordinator.async_refresh()
-    assert coordinator.update_interval == RETRY_AFTER_FAILURE * 2
-    await coordinator.async_refresh()
-    assert coordinator.update_interval == RETRY_AFTER_FAILURE * 4
-    await coordinator.async_refresh()
-    assert coordinator.update_interval == MAX_BACKOFF
-    await coordinator.async_refresh()
-    assert coordinator.update_interval == MAX_BACKOFF
+    # Still silent: still every round, no longer waits.
+    for _ in range(3):
+        await coordinator.async_refresh()
+        assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
 
     mock_ecu.for_unit(2).fail_requests(None)
     mock_ecu.for_unit(3).fail_requests(None)
@@ -268,11 +267,11 @@ async def test_interval_recovers_while_one_inverter_stays_silent(
     await setup_entry(hass, mock_config_entry)
     coordinator = mock_config_entry.runtime_data
 
-    # The whole ECU stops answering: the interval backs off.
+    # The whole ECU stops answering: it is tried again every round.
     mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
     await coordinator.async_refresh()
-    assert coordinator.update_interval == RETRY_AFTER_FAILURE
+    assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
 
     # The ECU is back, but unit 2 stays broken: normal polling resumes anyway.
     mock_ecu.for_unit(1).fail_requests(None)
@@ -457,3 +456,29 @@ async def test_one_inverter_left_at_1_w_at_night_is_not_daytime(
     await coordinator.async_refresh()
     assert coordinator.daytime_polls == 0
     assert coordinator.polls_without_news == 0
+
+
+async def test_a_long_interval_still_retries_every_round(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = MockConfigEntry(
+        domain="apsystems_modbus",
+        title="APsystems ECU",
+        unique_id="704000000001",
+        data={"host": "192.0.2.10", "port": 502, CONF_INVERTERS: INVERTERS},
+        options={CONF_SCAN_INTERVAL: 900},
+    )
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    assert_next_poll_after_a_round(coordinator, 900)
+
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
+
+    # Answering again: back to the chosen interval.
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(None)
+    await coordinator.async_refresh()
+    assert_next_poll_after_a_round(coordinator, 900)
