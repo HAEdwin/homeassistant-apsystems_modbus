@@ -10,21 +10,26 @@ from homeassistant.config_entries import SOURCE_DHCP, SOURCE_USER
 from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT, CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.apsystems_modbus.config_flow import parse_unit_ids
 from custom_components.apsystems_modbus.const import (
     CONF_INVERTERS,
+    CONF_MODEL,
+    CONF_SERIAL_NUMBER,
+    CONF_UNIT_ID,
     CONF_UNIT_IDS,
     DOMAIN,
 )
+from custom_components.apsystems_modbus.coordinator import new_address_issue_id
 from custom_components.apsystems_modbus.lifetime import (
     EnergyLedger,
     async_request_start,
 )
 
-from .conftest import INVERTERS
+from .conftest import INVERTERS, add_inverter
 
 HOST = "192.0.2.10"
 USER_INPUT = {CONF_HOST: HOST, CONF_PORT: 502, CONF_UNIT_IDS: ""}
@@ -274,6 +279,9 @@ async def test_reconfigure(
         {CONF_HOST: "192.0.2.11", CONF_PORT: 502, CONF_UNIT_IDS: "1"},
     )
     assert result["step_id"] == "confirm"
+    # Leaving out unit 2 removes it, so the screen says so first.
+    assert result["errors"] == {"base": "missing_inverters"}
+    assert result["description_placeholders"]["missing"] == "703000000002"
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
@@ -781,10 +789,68 @@ async def test_options_installation_power(
     assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 300}
 
 
-async def test_example_uses_a_comma_in_dutch(
-    hass: HomeAssistant, mock_ecu: MockModbusConnection
+@pytest.mark.parametrize("language", ["nl", "de", "fr"])
+async def test_example_uses_a_decimal_comma(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection, language: str
 ) -> None:
-    await hass.config.async_update(language="nl")
+    await hass.config.async_update(language=language)
     result = await start_user_flow(hass)
     result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
     assert result["description_placeholders"]["ds3_l_kw"] == "1,5"
+
+
+async def test_reconfigure_keeps_the_addresses(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    result = await mock_config_entry.start_reconfigure_flow(hass)
+    assert result["data_schema"]({})[CONF_UNIT_IDS] == "1, 2"
+
+
+async def test_reconfigure_after_a_new_address_searches_afresh(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    mock_config_entry.add_to_hass(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        new_address_issue_id(mock_config_entry.entry_id),
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="addresses_changed",
+    )
+    result = await mock_config_entry.start_reconfigure_flow(hass)
+    assert result["data_schema"]({})[CONF_UNIT_IDS] == ""
+
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["step_id"] == "confirm"
+    assert result["errors"] is None
+
+
+async def test_reconfigure_searches_past_a_gap(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    add_inverter(mock_ecu, 5, "703000000005")
+    fifth = {CONF_UNIT_ID: 5, CONF_SERIAL_NUMBER: "703000000005", CONF_MODEL: "DS3"}
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="704000000001",
+        data={CONF_HOST: HOST, CONF_PORT: 502, CONF_INVERTERS: [*INVERTERS, fifth]},
+    )
+
+    # A new setup stops after two silent addresses.
+    result = await start_user_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["description_placeholders"]["count"] == "2"
+    hass.config_entries.flow.async_abort(result["flow_id"])
+
+    entry.add_to_hass(hass)
+    # A reconfigure keeps going until the highest known address.
+    result = await entry.start_reconfigure_flow(hass)
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["description_placeholders"]["count"] == "3"
+    assert result["errors"] is None

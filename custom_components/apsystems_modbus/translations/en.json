@@ -18,7 +18,7 @@
       },
       "reconfigure": {
         "title": "Change the connection",
-        "description": "Inverters are recognised by serial number, so changing an address keeps their history.",
+        "description": "Inverters are recognised by their ID from EMA Manager, so changing an address keeps their history.",
         "data": {
           "host": "Host",
           "port": "Port",
@@ -32,7 +32,7 @@
       },
       "dhcp_confirm": {
         "title": "APsystems ECU found",
-        "description": "Set up the APsystems ECU at {host}? Make sure Modbus is enabled on the ECU (EMA Manager, Local Access → Modbus settings) and that nothing else polls it over Modbus."
+        "description": "Set up the APsystems ECU at {host}? Make sure Modbus is enabled on the ECU (EMA Manager, Local Access → Workspace → Modbus settings) and that nothing else polls it over Modbus."
       },
       "confirm": {
         "title": "Inverters found: {count}",
@@ -59,7 +59,8 @@
       "unsupported_layout": "The register layout differs from the tested ECU-R. Please share a register dump in an issue.",
       "invalid_unit_ids": "Enter addresses between 1 and 247, for example 1-8 or 1, 2, 5.",
       "unknown": "Unexpected error",
-      "invalid_installation_power": "This does not fit {count} inverters. Enter the power in kW, for example {ds3_l_kw}."
+      "invalid_installation_power": "This does not fit {count} inverters. Enter the power in kW, for example {ds3_l_kw}.",
+      "missing_inverters": "Not found: {missing}. Confirm only if these inverters are really gone. They are removed with their history."
     },
     "abort": {
       "already_configured": "Device is already configured",
@@ -82,7 +83,7 @@
         },
         "data_description": {
           "scan_interval": "The ECU fetches new values from the inverters every 5 minutes. The integration reads them right after that. Polling less often lowers the load on the ECU.",
-          "lifetime_energy": "Change only to correct the counter. It continues from the value you enter. The Energy dashboard shows the change once as production in that hour. You can adjust that hour under Developer tools → Statistics.",
+          "lifetime_energy": "Change only to correct the counter. It continues from the value you enter. The Energy dashboard shows the change once as production in that hour. You can adjust that hour under Settings → Tools → Statistics.",
           "peak_power": "Highest total power so far. Set to 0 to start over.",
           "installation_power": "Output of all inverters together, for example {count} × 0.73 = {ds3_l_kw} kW for DS3-L or {count} × 0.88 = {ds3_kw} kW for DS3. Leave empty to set the limit in percent only."
         }
@@ -206,6 +207,10 @@
     "check_installation_power": {
       "title": "Check the installation power of the APsystems ECU",
       "description": "An inverter keeps delivering more than the power limit of {limit} % allows, also after the limit was sent again. The installation power under Configure is probably too low. This notice disappears when you change it, set a new limit or restart Home Assistant."
+    },
+    "addresses_changed": {
+      "title": "Inverter has a new address",
+      "description": "Inverter {id} got a new address in the Modbus settings of EMA Manager ({old} → {new}). Its values are unavailable until you take this over. Choose Reconfigure in the menu of this integration. Devices and history are kept."
     }
   },
   "selector": {

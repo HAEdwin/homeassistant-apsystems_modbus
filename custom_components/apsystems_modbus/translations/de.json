@@ -1,0 +1,157 @@
+{
+  "config": {
+    "flow_title": "APsystems ECU unter {host}",
+    "step": {
+      "user": {
+        "title": "Mit der ECU verbinden",
+        "description": "Die ECU muss per Netzwerkkabel verbunden sein und Modbus muss auf der ECU aktiviert sein (App EMA Manager über den Access Point der ECU: Local Access → Workspace → Modbus settings). Nichts anderes sollte die ECU über Modbus abfragen, weil sie schnell überlastet ist.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "unit_ids": "Adressen der Wechselrichter"
+        },
+        "data_description": {
+          "host": "IP-Adresse der ECU im kabelgebundenen Netzwerk.",
+          "port": "502, außer du hast ihn geändert.",
+          "unit_ids": "Für die automatische Suche leer lassen oder die Adressen aus EMA Manager eingeben, zum Beispiel 1-8 oder 1, 2, 5."
+        }
+      },
+      "reconfigure": {
+        "title": "Verbindung ändern",
+        "description": "Wechselrichter werden anhand ihrer ID aus EMA Manager erkannt. Wenn du eine Adresse änderst, bleibt der Verlauf des Wechselrichters erhalten.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "unit_ids": "Adressen der Wechselrichter"
+        },
+        "data_description": {
+          "host": "IP-Adresse der ECU im kabelgebundenen Netzwerk.",
+          "port": "502, außer du hast ihn geändert.",
+          "unit_ids": "Für die automatische Suche leer lassen oder die Adressen aus EMA Manager eingeben, zum Beispiel 1-8 oder 1, 2, 5."
+        }
+      },
+      "dhcp_confirm": {
+        "title": "APsystems ECU gefunden",
+        "description": "Die APsystems ECU unter {host} einrichten? Achte darauf, dass Modbus auf der ECU aktiviert ist (EMA Manager, Local Access → Workspace → Modbus settings) und nichts anderes sie über Modbus abfragt."
+      },
+      "confirm": {
+        "title": "Gefundene Wechselrichter: {count}",
+        "description": "| ID | Adresse | Modell |\n|---|---|---|\n{inverters}",
+        "data": {
+          "installation_power": "Anlagenleistung (optional)",
+          "lifetime_energy": "Gesamtenergie (optional)"
+        },
+        "data_description": {
+          "installation_power": "Leistung aller Wechselrichter zusammen, zum Beispiel {count} × 0,73 = {ds3_l_kw} kW für DS3-L oder {count} × 0,88 = {ds3_kw} kW für DS3. Leer lassen, um die Begrenzung nur in Prozent einzustellen.",
+          "lifetime_energy": "Gesamtenergie aus der EMA-App, in kWh. Der Zähler läuft ab diesem Wert weiter. Leer lassen, um bei 0 zu beginnen."
+        }
+      }
+    },
+    "progress": {
+      "scan": "Suche nach Wechselrichtern. Das kann bis zu einer Minute dauern."
+    },
+    "error": {
+      "cannot_connect": "Keine Antwort von der ECU. Prüfe die IP-Adresse und verbinde die ECU per Netzwerkkabel. Modbus TCP funktioniert nicht über WLAN.",
+      "modbus_disabled": "Die ECU hat die Verbindung abgelehnt. Modbus ist ab Werk deaktiviert. Drücke die AP-Taste an der ECU, verbinde dich mit ihrem WLAN, öffne EMA Manager mit Local Access und aktiviere Modbus unter Workspace → Modbus settings mit einer Adresse für jeden Wechselrichter. Versuche es dann erneut.",
+      "not_apsystems": "Das Gerät unter dieser Adresse ist keine APsystems ECU.",
+      "no_inverters": "Kein Wechselrichter hat geantwortet. Gib jedem Wechselrichter eine Adresse in EMA Manager (Local Access → Workspace → Modbus settings) oder gib die Adressen hier ein.",
+      "ecu_busy": "Die ECU hat während der Suche nicht mehr geantwortet. Beende andere Modbus-Clients, warte fünf Minuten und versuche es erneut.",
+      "unsupported_layout": "Das Registerlayout weicht von dem der getesteten ECU-R ab. Bitte teile einen Register-Dump in einem Issue.",
+      "invalid_unit_ids": "Gib Adressen zwischen 1 und 247 ein, zum Beispiel 1-8 oder 1, 2, 5.",
+      "unknown": "Unerwarteter Fehler",
+      "invalid_installation_power": "Das passt nicht zur Anzahl der Wechselrichter ({count}). Gib die Leistung in kW ein, zum Beispiel {ds3_l_kw}.",
+      "missing_inverters": "Nicht gefunden: {missing}. Bestätige nur, wenn diese Wechselrichter wirklich nicht mehr da sind. Sie werden mit ihrem Verlauf entfernt."
+    },
+    "abort": {
+      "already_configured": "Gerät ist bereits konfiguriert",
+      "already_in_progress": "Die Konfiguration läuft bereits",
+      "cannot_connect": "Verbindung fehlgeschlagen",
+      "reconfigure_successful": "Neukonfiguration erfolgreich",
+      "different_ecu": "Das Gerät unter dieser Adresse ist eine andere ECU. Füge sie stattdessen als neue Integration hinzu.",
+      "not_apsystems": "Das Gerät unter dieser Adresse ist keine APsystems ECU."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Einstellungen",
+        "data": {
+          "scan_interval": "Abfrageintervall",
+          "lifetime_energy": "Gesamtenergie",
+          "peak_power": "Spitzenleistung",
+          "installation_power": "Anlagenleistung"
+        },
+        "data_description": {
+          "scan_interval": "Die ECU holt alle 5 Minuten neue Werte von den Wechselrichtern. Die Integration liest sie direkt danach aus. Selteneres Auslesen entlastet die ECU.",
+          "lifetime_energy": "Nur ändern, um den Zähler zu korrigieren. Er zählt ab dem eingegebenen Wert weiter. Das Energie-Dashboard zeigt die Änderung einmalig als Erzeugung in der Stunde der Änderung. Diese Stunde kannst du unter Einstellungen → Werkzeuge → Statistik anpassen.",
+          "peak_power": "Höchste Gesamtleistung bisher. Auf 0 setzen, um neu zu beginnen.",
+          "installation_power": "Leistung aller Wechselrichter zusammen, zum Beispiel {count} × 0,73 = {ds3_l_kw} kW für DS3-L oder {count} × 0,88 = {ds3_kw} kW für DS3. Leer lassen, um die Begrenzung nur in Prozent einzustellen."
+        }
+      }
+    },
+    "error": {
+      "invalid_installation_power": "Das passt nicht zur Anzahl der Wechselrichter ({count}). Gib die Leistung in kW ein, zum Beispiel {ds3_l_kw}."
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Keine Antwort von der ECU unter {host}. Prüfe die IP-Adresse, verbinde die ECU per Netzwerkkabel und achte darauf, dass Modbus auf der ECU aktiviert ist (EMA Manager, Local Access)."
+    },
+    "link_in_use": {
+      "message": "Eine andere Integration nutzt das Modbus-Gerät unter {host} bereits mit anderen Verbindungseinstellungen."
+    },
+    "unsupported_layout": {
+      "message": "Das Gerät bietet nicht das Registerlayout einer unterstützten APsystems ECU ({details}). Bitte teile einen Register-Dump in einem Issue."
+    },
+    "connection_lost": {
+      "message": "Die Verbindung zur ECU wurde unterbrochen. Bei der nächsten Abfrage wird es erneut versucht."
+    },
+    "no_inverter_answered": {
+      "message": "Kein Wechselrichter hat geantwortet. Die ECU ist vielleicht beschäftigt. Bei der nächsten Abfrage wird es erneut versucht."
+    },
+    "power_limit_pending": {
+      "message": "Die ECU hat die Leistungsbegrenzung von {percent} % noch nicht übernommen. Die Integration schreibt sie bei der nächsten Abfrage erneut. Bis dahin zeigt der Schieberegler, was die ECU meldet."
+    },
+    "power_limit_invalid": {
+      "message": "{value} ist keine gültige Leistungsbegrenzung. Gib eine ganze Zahl von 0 bis 100 ein."
+    },
+    "limit_maybe_active": {
+      "message": "Die APsystems ECU konnte beim Entfernen der Integration nicht geprüft werden. Falls eine Leistungsbegrenzung eingestellt war, sind die Wechselrichter möglicherweise noch begrenzt. Füge die Integration erneut hinzu und stelle die Leistungsbegrenzung auf 100 %."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "state": {
+          "off": "Aus",
+          "sleeping": "Ruhezustand",
+          "starting": "Startet",
+          "mppt": "MPPT",
+          "throttled": "Begrenzt",
+          "shutting_down": "Fährt herunter",
+          "fault": "Störung",
+          "standby": "Standby"
+        }
+      }
+    }
+  },
+  "issues": {
+    "check_installation_power": {
+      "title": "Anlagenleistung der APsystems ECU prüfen",
+      "description": "Ein Wechselrichter liefert weiterhin mehr, als die Leistungsbegrenzung von {limit} % erlaubt, auch nachdem die Begrenzung erneut gesendet wurde. Die Anlagenleistung unter Konfigurieren ist wahrscheinlich zu niedrig. Dieser Hinweis verschwindet, wenn du sie änderst, eine neue Begrenzung einstellst oder Home Assistant neu startest."
+    },
+    "addresses_changed": {
+      "title": "Wechselrichter hat eine neue Adresse",
+      "description": "Wechselrichter {id} hat in den Modbus settings von EMA Manager eine neue Adresse bekommen ({old} → {new}). Bis du das übernimmst, sind seine Werte nicht verfügbar. Wähle Neu konfigurieren im Menü dieser Integration. Geräte und Verlauf bleiben erhalten."
+    }
+  },
+  "selector": {
+    "scan_interval": {
+      "options": {
+        "300": "Jeder Zyklus (5 Minuten)",
+        "600": "Jeder zweite Zyklus (10 Minuten)",
+        "900": "Jeder dritte Zyklus (15 Minuten)"
+      }
+    }
+  }
+}

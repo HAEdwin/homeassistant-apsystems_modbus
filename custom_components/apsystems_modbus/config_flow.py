@@ -32,7 +32,11 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT, CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import config_validation as cv, selector
+from homeassistant.helpers import (
+    config_validation as cv,
+    issue_registry as ir,
+    selector,
+)
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
@@ -52,7 +56,7 @@ from .const import (
     MIN_POWER_PER_INVERTER,
     SCAN_INTERVAL_CHOICES,
 )
-from .coordinator import round_interval
+from .coordinator import new_address_issue_id, round_interval
 from .ecu import (
     SUNSPEC_MARKER,
     Identity,
@@ -100,7 +104,7 @@ _KW_SELECTOR = selector.NumberSelector(
 DS3_L_KW = 0.73
 DS3_KW = 0.88
 """Output of a DS3-L and a DS3. The ECU reports both as DS3."""
-COMMA_LANGUAGES = ("nl",)
+COMMA_LANGUAGES = ("nl", "de", "fr")
 """Languages of the shipped translations that write 5,8 instead of 5.8."""
 
 
@@ -260,6 +264,8 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         self._host = ""
         self._port = DEFAULT_PORT
         self._unit_ids: list[int] | None = None
+        self._search_until = 0
+        """Highest address the search always reaches, past silent ones."""
         self._mac: str | None = None
         self._found: list[FoundInverter] = []
         self._probe_task: asyncio.Task[list[FoundInverter]] | None = None
@@ -346,16 +352,27 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Change host, port or addresses of an existing entry."""
         entry = self._get_reconfigure_entry()
+        # Do not miss a known inverter behind a gap of silent addresses.
+        self._search_until = max(
+            item[CONF_UNIT_ID] for item in entry.data[CONF_INVERTERS]
+        )
         errors: dict[str, str] = {}
         if user_input is not None:
             if self._take_connection_input(user_input, errors):
                 return await self.async_step_scan()
             current: Mapping[str, Any] = user_input
         else:
+            # After an address change in EMA Manager the old addresses are
+            # wrong, so the search starts afresh.
+            moved = ir.async_get(self.hass).async_get_issue(
+                DOMAIN, new_address_issue_id(entry.entry_id)
+            )
             current = {
                 CONF_HOST: entry.data[CONF_HOST],
                 CONF_PORT: entry.data[CONF_PORT],
-                CONF_UNIT_IDS: ", ".join(
+                CONF_UNIT_IDS: ""
+                if moved is not None
+                else ", ".join(
                     str(item[CONF_UNIT_ID]) for item in entry.data[CONF_INVERTERS]
                 ),
             }
@@ -552,7 +569,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 # Something answers, but it is not a SunSpec device.
                 raise ProbeError("not_apsystems")
             silent[unit_id] = unit
-            if len(silent) >= SCAN_STOP_AFTER_MISSES:
+            if len(silent) >= SCAN_STOP_AFTER_MISSES and unit_id >= self._search_until:
                 if not answered:
                     # Nothing on the first addresses: the ECU is reachable but
                     # no inverter has an address yet.
@@ -583,7 +600,13 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_update_reload_and_abort(
                     entry, data={**entry.data, **data}
                 )
-            return self._show_found(probatio.Schema({}))
+            # Confirming removes these devices and their history, so say so.
+            missing = sorted(known - {item.serial_number for item in self._found})
+            return self._show_found(
+                probatio.Schema({}),
+                {"base": "missing_inverters"} if missing else None,
+                ", ".join(missing),
+            )
 
         errors: dict[str, str] = {}
         if user_input is not None and not self._show_confirm:
@@ -637,7 +660,10 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         return self._show_found(schema, errors)
 
     def _show_found(
-        self, schema: probatio.Schema, errors: dict[str, str] | None = None
+        self,
+        schema: probatio.Schema,
+        errors: dict[str, str] | None = None,
+        missing: str = "",
     ) -> ConfigFlowResult:
         # Table rows in the order and columns of EMA Manager (ID, address),
         # plus the model the ECU reports.
@@ -652,6 +678,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "inverters": rows,
+                "missing": missing,
                 **_power_placeholders(self.hass, len(self._found)),
             },
         )

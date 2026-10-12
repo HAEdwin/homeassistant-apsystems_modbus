@@ -541,11 +541,30 @@ async def test_wrong_serial_on_control_unit_does_not_count(
     await set_limit(hass, 30)
     writes = record_writes(mock_ecu.for_unit(1))
 
-    add_inverter(mock_ecu, 1, "704000009999")  # another inverter moved to address 1
+    add_inverter(mock_ecu, 1, "703000000002")  # unit 2's inverter on address 1
     for _ in range(3):
         await coordinator.async_refresh()
 
     assert writes == []
+
+
+async def test_replaced_control_unit_keeps_the_limit(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
+    unit = mock_ecu.for_unit(1)
+    add_inverter(mock_ecu, 1, "704000009999")  # a new inverter on address 1
+    writes = record_writes(unit)
+
+    # The ECU lost the setting: the limit is still sent back.
+    set_ecu(unit, 100, 48)
+    await coordinator.async_refresh()
+    await coordinator.async_refresh()
+
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
 
 
 async def test_latest_of_concurrent_calls_wins(
@@ -1594,13 +1613,23 @@ async def test_two_different_readbacks_do_not_move_the_slider(
     assert state_of(hass) == "70"
 
 
+@pytest.mark.parametrize(
+    ("language", "opening"),
+    [
+        ("nl", "De APsystems ECU kon niet"),
+        ("de", "Die APsystems ECU konnte"),
+        ("fr", "L'ECU APsystems n'a pas pu"),
+    ],
+)
 async def test_removal_notice_is_in_the_users_language(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
+    language: str,
+    opening: str,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
-    await hass.config.async_update(language="nl")
+    await hass.config.async_update(language=language)
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
 
@@ -1608,7 +1637,7 @@ async def test_removal_notice_is_in_the_users_language(
     await hass.async_block_till_done()
 
     (notice,) = notifications(hass).values()
-    assert notice["message"].startswith("De APsystems ECU kon niet")
+    assert notice["message"].startswith(opening)
 
 
 async def test_technical_sensors_are_diagnostic(

@@ -19,7 +19,7 @@ from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.translation import async_get_translations
 
 from .const import CONF_INVERTERS, CONF_SERIAL_NUMBER, CONF_UNIT_ID, DOMAIN
-from .coordinator import ApsystemsConfigEntry, EcuCoordinator
+from .coordinator import ApsystemsConfigEntry, EcuCoordinator, new_address_issue_id
 from .ecu import Inverter, UnsupportedLayoutError
 from .entity import ecu_device_info, ecu_identifier
 from .lifetime import EnergyLedger
@@ -59,8 +59,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
     coordinator = EcuCoordinator(hass, entry, inverters, lead, ledger)
     entry.runtime_data = coordinator
     await coordinator.power_limit.async_load()
-    # A notice about the installation power is checked afresh after a change.
+    # Notices are checked afresh after a change or a reconfigure.
     ir.async_delete_issue(hass, DOMAIN, issue_id_for(entry.entry_id))
+    ir.async_delete_issue(hass, DOMAIN, new_address_issue_id(entry.entry_id))
     # The inverter devices hang below the ECU device, so register that first.
     registry = dr.async_get(hass)
     ecu_device = registry.async_get_or_create(
@@ -144,6 +145,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
     """
     await store_for(hass, entry.entry_id).async_remove()
     ir.async_delete_issue(hass, DOMAIN, issue_id_for(entry.entry_id))
+    ir.async_delete_issue(hass, DOMAIN, new_address_issue_id(entry.entry_id))
     try:
         released = await _async_release_limit(hass, entry)
     except (ModbusError, HomeAssistantError) as err:

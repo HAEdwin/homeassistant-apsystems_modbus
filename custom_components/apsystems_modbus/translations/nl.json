@@ -18,7 +18,7 @@
       },
       "reconfigure": {
         "title": "Verbinding wijzigen",
-        "description": "Omvormers worden herkend aan hun serienummer. Een ander adres behoudt dus de historie.",
+        "description": "Omvormers worden herkend aan hun ID uit EMA Manager. Een ander adres behoudt dus de historie.",
         "data": {
           "host": "Host",
           "port": "Poort",
@@ -32,7 +32,7 @@
       },
       "dhcp_confirm": {
         "title": "APsystems ECU gevonden",
-        "description": "De APsystems ECU op {host} instellen? Controleer dat Modbus op de ECU aan staat (EMA Manager, Lokale toegang → Modbus-instellingen) en dat niets anders hem via Modbus uitleest."
+        "description": "De APsystems ECU op {host} instellen? Controleer dat Modbus op de ECU aan staat (EMA Manager, Lokale toegang → Werkruimte → Modbus-instellingen) en dat niets anders hem via Modbus uitleest."
       },
       "confirm": {
         "title": "Gevonden omvormers: {count}",
@@ -59,7 +59,8 @@
       "unsupported_layout": "De registerindeling wijkt af van de geteste ECU-R. Deel een registerdump in een issue.",
       "invalid_unit_ids": "Vul adressen tussen 1 en 247 in, bijvoorbeeld 1-8 of 1, 2, 5.",
       "unknown": "Onverwachte fout",
-      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {ds3_l_kw}."
+      "invalid_installation_power": "Dit past niet bij {count} omvormers. Vul het vermogen in kW in, bijvoorbeeld {ds3_l_kw}.",
+      "missing_inverters": "Niet gevonden: {missing}. Bevestig alleen als deze omvormers er echt niet meer zijn. Ze worden verwijderd met hun historie."
     },
     "abort": {
       "already_configured": "Apparaat is al geconfigureerd",
@@ -82,7 +83,7 @@
         },
         "data_description": {
           "scan_interval": "De ECU haalt elke 5 minuten nieuwe waarden op bij de omvormers. De integratie leest ze direct daarna uit. Minder vaak uitlezen ontlast de ECU.",
-          "lifetime_energy": "Alleen aanpassen om de teller te corrigeren. Hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur. Dat uur kun je aanpassen onder Ontwikkelhulpmiddelen → Statistieken.",
+          "lifetime_energy": "Alleen aanpassen om de teller te corrigeren. Hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur. Dat uur kun je aanpassen onder Instellingen → Hulpmiddelen → Statistieken.",
           "peak_power": "Hoogste totaalvermogen tot nu toe. Zet op 0 om opnieuw te beginnen.",
           "installation_power": "Vermogen van alle omvormers samen, bijvoorbeeld {count} × 0,73 = {ds3_l_kw} kW voor DS3-L of {count} × 0,88 = {ds3_kw} kW voor DS3. Leeg laten kan, dan stel je de limiet alleen in procenten in."
         }
@@ -138,6 +139,10 @@
     "check_installation_power": {
       "title": "Controleer het installatievermogen van de APsystems ECU",
       "description": "Een omvormer blijft meer leveren dan de limiet van {limit} % toelaat, ook nadat de limiet opnieuw is verstuurd. Het installatievermogen onder Configureren is waarschijnlijk te laag. Deze melding verdwijnt als je het aanpast, een nieuwe limiet zet of Home Assistant herstart."
+    },
+    "addresses_changed": {
+      "title": "Omvormer heeft een nieuw adres",
+      "description": "Omvormer {id} heeft in de Modbus-instellingen van EMA Manager een nieuw adres gekregen ({old} → {new}). Tot je dit overneemt, zijn de waarden niet beschikbaar. Kies Herconfigureer in het menu van deze integratie. Apparaten en historie blijven behouden."
     }
   },
   "selector": {

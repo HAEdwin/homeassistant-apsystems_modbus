@@ -67,7 +67,7 @@ rules:
   reconfiguration-flow: done
   repair-issues:
     status: done
-    comment: An installation power that does not match the inverters raises a repair issue. A changed inverter on a known address is only logged, as it needs a reconfigure anyway.
+    comment: An installation power that does not match the inverters raises a repair issue, and so does an inverter that got another address in EMA Manager. A replaced inverter on a known address simply continues under its device.
   stale-devices: done
 
   # Platinum

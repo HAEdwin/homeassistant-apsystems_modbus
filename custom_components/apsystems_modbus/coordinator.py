@@ -13,6 +13,7 @@ from modbus_connection import ModbusConnectionError, ModbusError, ModbusTimeoutE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -38,6 +39,11 @@ from .power_limit import PowerLimit, store_for
 _LOGGER = logging.getLogger(__name__)
 
 type ApsystemsConfigEntry = ConfigEntry[EcuCoordinator]
+
+
+def new_address_issue_id(entry_id: str) -> str:
+    """Return the repair issue id telling that an inverter got a new address."""
+    return f"addresses_changed_{entry_id}"
 
 
 def round_interval(seconds: float) -> int:
@@ -216,20 +222,55 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         return data
 
     def _serial_matches(self, unit_id: int, inverter: Inverter) -> bool:
-        """Guard against a different inverter being moved to a known address."""
+        """Tell whether the values on this address belong to its device.
+
+        An unknown serial number is a replaced inverter: its values simply
+        continue under the device of this address. The serial number of
+        another configured address means the addresses were changed in EMA
+        Manager. Those values are held back until the user reconfigures, so
+        two inverters never mix.
+        """
         expected = self.serials[unit_id]
         actual = inverter.status.serial_number
         # Unknown when the status read failed this cycle; nothing to compare.
         if actual is None or actual == expected:
             return True
+        moved_from = next(
+            (other for other, serial in self.serials.items() if serial == actual),
+            None,
+        )
         if unit_id not in self._reported:
             self._reported.add(unit_id)
-            _LOGGER.warning(
-                "Unit %s: another inverter than the configured one answers, "
-                "reconfigure the integration",
-                unit_id,
-            )
-        return False
+            if moved_from is None:
+                _LOGGER.warning(
+                    "Unit %s: a new inverter answers, its values continue "
+                    "under the existing device",
+                    unit_id,
+                )
+            else:
+                _LOGGER.warning(
+                    "Unit %s: the inverter of unit %s answers here, "
+                    "reconfigure the integration",
+                    unit_id,
+                    moved_from,
+                )
+                self._report_new_address(actual, moved_from, unit_id)
+        return moved_from is None
+
+    def _report_new_address(self, serial: str, old: int, new: int) -> None:
+        """Ask the user once to reconfigure after an address change."""
+        issue_id = new_address_issue_id(self.config_entry.entry_id)
+        if ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id) is not None:
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="addresses_changed",
+            translation_placeholders={"id": serial, "old": str(old), "new": str(new)},
+        )
 
     async def _async_note_failure(self) -> None:
         """Try again after every round until the ECU answers again."""

@@ -15,6 +15,7 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -30,6 +31,7 @@ from custom_components.apsystems_modbus.const import (
 )
 from custom_components.apsystems_modbus.coordinator import (
     EcuCoordinator,
+    new_address_issue_id,
     round_interval,
     settle_time,
     until_next_poll,
@@ -214,16 +216,77 @@ async def test_timeout_budget_skips_rest_and_backs_off(
     assert_next_poll_after_a_round(coordinator)
 
 
-async def test_replaced_inverter_is_reported_and_held_back(
+def new_address_issue(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> ir.IssueEntry | None:
+    return ir.async_get(hass).async_get_issue(
+        "apsystems_modbus", new_address_issue_id(entry.entry_id)
+    )
+
+
+async def test_replaced_inverter_keeps_counting(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    add_inverter(mock_ecu, 2, "703000009999")  # a new inverter on address 2
+
+    await setup_entry(hass, mock_config_entry)
+    await mock_config_entry.runtime_data.async_refresh()
+
+    assert mock_config_entry.runtime_data.data.available == {1, 2}
+    assert caplog.text.count("Unit 2: a new inverter answers") == 1
+    assert new_address_issue(hass, mock_config_entry) is None
+
+
+async def test_replaced_inverter_keeps_the_lifetime(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
 ) -> None:
-    add_inverter(mock_ecu, 2, "703000009999")  # another inverter on address 2
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    before = coordinator.ledger.lifetime
+
+    # The new inverter starts its own daily counter low.
+    add_inverter(mock_ecu, 2, "703000009999")
+    set_float32(mock_ecu.for_unit(2), ENERGY_TODAY, 10.0)
+    for _ in range(2):
+        await coordinator.async_refresh()
+        assert coordinator.ledger.lifetime >= before
+    kept = coordinator.ledger.lifetime
+
+    # Once it runs up, all it produced today counts, from 0.
+    set_float32(mock_ecu.for_unit(2), ENERGY_TODAY, 50.0)
+    await coordinator.async_refresh()
+    assert coordinator.ledger.lifetime == pytest.approx(kept + 50.0)
+
+
+async def test_changed_address_is_held_back_and_reported(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    add_inverter(mock_ecu, 2, "704000000001")  # unit 1's inverter on address 2
 
     await setup_entry(hass, mock_config_entry)
 
     assert mock_config_entry.runtime_data.data.available == {1}
+    issue = new_address_issue(hass, mock_config_entry)
+    assert issue is not None
+    assert issue.translation_placeholders == {
+        "id": "704000000001",
+        "old": "1",
+        "new": "2",
+    }
+
+    # Reconfiguring reloads the entry; with the addresses right it stays away.
+    add_inverter(mock_ecu, 2, "703000000002")
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert new_address_issue(hass, mock_config_entry) is None
+    assert mock_config_entry.runtime_data.data.available == {1, 2}
 
 
 async def test_connection_lost_marks_update_failed(

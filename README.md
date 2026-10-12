@@ -85,7 +85,7 @@ Under *Configure* you can read every round of the ECU (5 minutes, the
 default) or every second or third round, enter the installation power and
 correct the lifetime energy and lifetime peak power. A correction shows up
 once as production in that hour. Fix that under
-*Developer tools → Statistics*.
+*Settings → Tools → Statistics*.
 
 ## Energy dashboard
 
@@ -152,6 +152,9 @@ automation:
 - A silent inverter becomes unavailable, but the totals keep its share.
   If the ECU stops answering, the integration tries again after every round
   of the ECU and recovers by itself.
+- A replaced inverter on the same address keeps counting under its existing
+  device. If you give an inverter another address in EMA Manager, a repair
+  asks you to choose Reconfigure. Devices and history are kept.
 
 ## Troubleshooting
 
@@ -162,6 +165,7 @@ automation:
 | No inverter answered | Assign addresses in EMA Manager or enter them manually |
 | The ECU stopped answering | Stop other Modbus clients, wait five minutes, try again |
 | Register layout differs | Share a register dump in an issue |
+| Inverter has a new address | Choose Reconfigure in the menu of the integration |
 
 **Reporting an issue:** add the diagnostics from the menu of the integration.
 They contain no addresses or serial numbers. Turn on debug logging in the same
