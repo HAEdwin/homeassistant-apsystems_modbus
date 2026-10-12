@@ -49,10 +49,10 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_POWER_PER_INVERTER,
-    MAX_SCAN_INTERVAL,
     MIN_POWER_PER_INVERTER,
-    MIN_SCAN_INTERVAL,
+    SCAN_INTERVAL_CHOICES,
 )
+from .coordinator import round_interval
 from .ecu import (
     SUNSPEC_MARKER,
     Identity,
@@ -720,7 +720,7 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
                 if loaded:
                     await self._apply_corrections(user_input)
                 options: dict[str, Any] = {
-                    CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL]
+                    CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL])
                 }
                 if power is not None:
                     options[CONF_INSTALLATION_POWER] = round(power, 1)
@@ -773,16 +773,18 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
             {
                 probatio.Required(
                     CONF_SCAN_INTERVAL,
-                    default=self.config_entry.options.get(
-                        CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                    default=str(
+                        round_interval(
+                            self.config_entry.options.get(
+                                CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                            )
+                        )
                     ),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=MIN_SCAN_INTERVAL,
-                        max=MAX_SCAN_INTERVAL,
-                        step=10,
-                        unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[str(seconds) for seconds in SCAN_INTERVAL_CHOICES],
+                        translation_key=CONF_SCAN_INTERVAL,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
                 **extra,

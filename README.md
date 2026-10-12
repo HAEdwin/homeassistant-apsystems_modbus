@@ -81,9 +81,10 @@ Devices & services*, or add it yourself:
 | Installation power (optional) | Output of all inverters together in kW, for example 8 × 0.73 = 5.8 for DS3-L or 8 × 0.88 = 7.0 for DS3. Leave empty to set the limit in percent only. |
 | Lifetime energy (optional) | Your total from the EMA app in kWh. It counts on from there. Leave empty to start at 0. |
 
-Under *Configure* you can change the poll interval, enter the installation
-power and correct the lifetime energy and lifetime peak power. A correction
-shows up once as production in that hour. Fix that under
+Under *Configure* you can read every round of the ECU (5 minutes, the
+default) or every second or third round, enter the installation power and
+correct the lifetime energy and lifetime peak power. A correction shows up
+once as production in that hour. Fix that under
 *Developer tools → Statistics*.
 
 ## Energy dashboard
@@ -142,8 +143,10 @@ automation:
 
 ## Good to know
 
-- Values change when the ECU fetches new data from the inverters over Zigbee,
-  about every 5 minutes. Daily totals can differ about 1 % from the EMA app.
+- The ECU fetches new data from the inverters over Zigbee every 5 minutes.
+  The integration reads it right after that, so values in Home Assistant are
+  at most about a minute and a half old. Daily totals can differ about 1 %
+  from the EMA app.
 - At night inverters read 0 V and 0 Hz. Energy today follows the ECU, which
   resets it during the night.
 - A silent inverter becomes unavailable, but the totals keep its share.

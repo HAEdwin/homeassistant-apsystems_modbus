@@ -49,6 +49,16 @@ async def async_get_config_entry_diagnostics(
             if data and data.last_change
             else None,
         },
+        "polling": {
+            "interval_s": coordinator.interval,
+            "settle_s": coordinator.settle,
+            "daytime_polls": coordinator.daytime_polls,
+            "polls_without_news": coordinator.polls_without_news,
+            "late_inverters": {
+                str(unit_id): count
+                for unit_id, count in sorted(coordinator.late_inverters.items())
+            },
+        },
         "power_limit": {
             "control_unit": coordinator.power_limit.control.unit_id,
             "desired": coordinator.power_limit.desired,

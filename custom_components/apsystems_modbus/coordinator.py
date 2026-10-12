@@ -25,7 +25,13 @@ from .const import (
     MAX_BACKOFF,
     MAX_INVERTER_POWER,
     MAX_TIMEOUTS_PER_CYCLE,
+    MIN_POLL_GAP,
     RETRY_AFTER_FAILURE,
+    ROUND_PERIOD,
+    SCAN_INTERVAL_CHOICES,
+    SETTLE_BASE,
+    SETTLE_MAX,
+    SETTLE_PER_INVERTER,
 )
 from .ecu import Inverter
 from .lifetime import MAX_DAILY_WH, EnergyLedger
@@ -34,6 +40,34 @@ from .power_limit import PowerLimit, store_for
 _LOGGER = logging.getLogger(__name__)
 
 type ApsystemsConfigEntry = ConfigEntry[EcuCoordinator]
+
+
+def round_interval(seconds: float) -> int:
+    """Return the poll interval as a whole number of ECU rounds, in seconds.
+
+    Older versions stored any value from 60 to 900 s. Polling between two
+    rounds brings nothing new, so those are rounded to 1, 2 or 3 rounds.
+    """
+    rounds = round(seconds / ROUND_PERIOD)
+    count = len(SCAN_INTERVAL_CHOICES)
+    return min(max(rounds, 1), count) * ROUND_PERIOD
+
+
+def settle_time(inverters: int) -> int:
+    """Seconds after the start of a round when every inverter is refreshed."""
+    return min(SETTLE_BASE + SETTLE_PER_INVERTER * inverters, SETTLE_MAX)
+
+
+def until_next_poll(now: datetime, interval: int, settle: int) -> timedelta:
+    """Time from ``now`` to the next poll moment, just after an ECU round.
+
+    The ECU starts its rounds on the clock, so the moments are counted from
+    the Unix epoch. A moment closer than ``MIN_POLL_GAP`` is skipped.
+    """
+    wait = interval - (now.timestamp() - settle) % interval
+    if wait < MIN_POLL_GAP:
+        wait += interval
+    return timedelta(seconds=wait)
 
 
 @dataclass
@@ -62,8 +96,12 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
     inverters the rest of the cycle is skipped and the link is recycled. The
     next poll follows after two minutes, about the time the ECU needs to
     restart, and from then on the wait doubles, up to ``MAX_BACKOFF``, until
-    a cycle completes.
-    A pending write is let through between two inverters via ``write_lock``.
+    a cycle completes. A pending write is let through between two inverters
+    via ``write_lock``.
+
+    The ECU fetches new values from the inverters every five minutes, on the
+    clock. A completed cycle plans the next one just after the coming round,
+    so new values reach Home Assistant within about a minute and a half.
     """
 
     config_entry: ApsystemsConfigEntry
@@ -81,15 +119,18 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         ``lead`` is the inverter whose layout was checked at setup; the
         ECU-wide values such as the grid connection are read from it.
         """
-        self._base_interval = timedelta(
-            seconds=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        self.interval = round_interval(
+            entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         )
+        """Seconds between polls, a whole number of ECU rounds."""
+        self.settle = settle_time(len(inverters))
+        """Seconds into a round before polling."""
         super().__init__(
             hass,
             _LOGGER,
             config_entry=entry,
             name=f"{DOMAIN} {entry.title}",
-            update_interval=self._base_interval,
+            update_interval=timedelta(seconds=self.interval),
         )
         self.inverters = inverters
         self.ledger = ledger
@@ -111,6 +152,13 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         self._reported: set[int] = set()
         self._snapshot: dict[int, tuple[float | None, float | None]] = {}
         self._last_change: datetime | None = None
+        self.daytime_polls = 0
+        """Completed polls with at least one inverter online."""
+        self.polls_without_news = 0
+        """Daytime polls in which no inverter had new values."""
+        self.late_inverters: dict[int, int] = {}
+        """Per unit id: daytime polls in which this online inverter had old
+        values while others had new ones, a sign of polling too early."""
 
     async def _async_update_data(self) -> EcuData:
         data = EcuData()
@@ -167,6 +215,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         self._aggregate(data)
         # Runs after the loop, so write_lock is free; see power_limit.py.
         await self.power_limit.async_after_poll(data)
+        self._plan_next_poll()
         return data
 
     def _serial_matches(self, unit_id: int, inverter: Inverter) -> bool:
@@ -201,15 +250,22 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         # A link that stopped answering is opened fresh next time.
         await self._async_drop_link()
 
+    def _plan_next_poll(self) -> None:
+        """Poll next just after the coming ECU round, unless backing off."""
+        if not self._degraded:
+            self.update_interval = until_next_poll(
+                dt_util.utcnow(), self.interval, self.settle
+            )
+
     def _recover(self) -> None:
-        """Return to the normal interval once a cycle completes again.
+        """Return to the rhythm of the ECU once a cycle completes again.
 
         A cycle that was not cut short means the ECU answers, even if one
-        inverter stays silent (for example a broken one).
+        inverter stays silent (for example a broken one). The completed
+        cycle plans the next poll itself.
         """
         if self._degraded:
             self._degraded = False
-            self.update_interval = self._base_interval
             _LOGGER.info("The ECU is answering again; normal polling resumed")
 
     async def _async_drop_link(self) -> None:
@@ -247,10 +303,42 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         self.ledger.finish_poll(complete=len(data.available) == len(self.inverters))
         self.ledger.schedule_save()
 
-        changed = any(
-            self._snapshot.get(unit) != value for unit, value in snapshot.items()
-        )
+        fresh = {
+            unit
+            for unit, value in snapshot.items()
+            if self._snapshot.get(unit) != value
+        }
+        changed = bool(fresh)
+        self._count_news(data, snapshot, fresh)
         if changed or self._last_change is None:
             self._last_change = dt_util.utcnow()
         self._snapshot.update(snapshot)
         data.last_change = self._last_change
+
+    def _count_news(
+        self,
+        data: EcuData,
+        snapshot: dict[int, tuple[float | None, float | None]],
+        fresh: set[int],
+    ) -> None:
+        """Count polls that came before the ECU refreshed, for diagnostics.
+
+        Only daytime polls count, and only inverters seen in an earlier poll,
+        so a start, the night and a silent inverter are left out. Daytime
+        means an inverter on the grid: at night the ECU often keeps one
+        inverter at 1 W, but always with 0 Hz.
+        """
+        known = {unit for unit in snapshot if unit in self._snapshot}
+        on_grid = {unit for unit in known if self._on_grid(unit)}
+        if not on_grid:
+            return
+        self.daytime_polls += 1
+        if not fresh & known:
+            self.polls_without_news += 1
+            return
+        for unit in on_grid - fresh:
+            self.late_inverters[unit] = self.late_inverters.get(unit, 0) + 1
+
+    def _on_grid(self, unit_id: int) -> bool:
+        """Whether an inverter reports a grid frequency this cycle."""
+        return bool(self.inverters[unit_id].measurements.frequency)

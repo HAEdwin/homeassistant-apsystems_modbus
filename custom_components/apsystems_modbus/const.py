@@ -28,8 +28,19 @@ class InverterConfig(TypedDict):
 
 DEFAULT_PORT = 502
 DEFAULT_SCAN_INTERVAL = 300
-MIN_SCAN_INTERVAL = 60
-MAX_SCAN_INTERVAL = 900
+
+ROUND_PERIOD = 300
+"""Seconds between two ECU rounds. A round starts about 10 s past every fifth
+minute of the clock and refreshes the inverters one by one."""
+SCAN_INTERVAL_CHOICES = (300, 600, 900)
+"""Poll every round, every second round or every third round."""
+SETTLE_BASE = 30
+SETTLE_PER_INVERTER = 4
+SETTLE_MAX = 280
+"""Seconds into a round before polling: time for the ECU to refresh the
+inverters, longer with more of them, and always before the next round."""
+MIN_POLL_GAP = 60
+"""Shortest wait between two polls, also when a round is close."""
 
 MAX_TIMEOUTS_PER_CYCLE = 2
 """After this many unanswered inverters in one cycle the rest is skipped."""

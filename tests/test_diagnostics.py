@@ -29,6 +29,13 @@ async def test_diagnostics_are_redacted(
     assert "192.0.2.10" not in text
     assert "704000000001" not in text
     assert diagnostics["coordinator"]["available"] == [1, 2]
+    assert diagnostics["polling"] == {
+        "interval_s": 300,
+        "settle_s": 38,
+        "daytime_polls": 0,
+        "polls_without_news": 0,
+        "late_inverters": {},
+    }
     assert diagnostics["inverters"]["1"]["measurements"]["ac_power"] == 204.0
     assert diagnostics["inverters"]["1"]["identity"]["model"] == "DS3"
     assert diagnostics["power_limit"] == {

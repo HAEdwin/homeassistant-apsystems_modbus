@@ -294,10 +294,32 @@ async def test_options_flow(
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert result["step_id"] == "init"
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: 600}
+        result["flow_id"], {CONF_SCAN_INTERVAL: "600"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 600}
+
+
+async def test_old_poll_interval_is_shown_as_a_round(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = MockConfigEntry(
+        domain="apsystems_modbus",
+        title="APsystems ECU",
+        unique_id="704000000001",
+        data={"host": "192.0.2.10", "port": 502, CONF_INVERTERS: INVERTERS},
+        options={CONF_SCAN_INTERVAL: 120},
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.interval == 300
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    (field,) = (
+        key for key in result["data_schema"].schema if key == CONF_SCAN_INTERVAL
+    )
+    assert field.default() == "300"
 
 
 @pytest.mark.parametrize(
@@ -512,7 +534,7 @@ async def test_options_correct_lifetime_and_peak(
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_SCAN_INTERVAL: 300, "lifetime_energy": 25000.0, "peak_power": 0},
+        {CONF_SCAN_INTERVAL: "300", "lifetime_energy": 25000.0, "peak_power": 0},
     )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -537,7 +559,7 @@ async def test_options_unchanged_values_change_nothing(
     await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
-            CONF_SCAN_INTERVAL: 300,
+            CONF_SCAN_INTERVAL: "300",
             "lifetime_energy": suggested(result, "lifetime_energy"),
             "peak_power": suggested(result, "peak_power"),
         },
@@ -737,11 +759,11 @@ async def test_options_installation_power(
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert suggested(result, "installation_power") is None
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: 300, "installation_power": 0.1}
+        result["flow_id"], {CONF_SCAN_INTERVAL: "300", "installation_power": 0.1}
     )
     assert result["errors"] == {"installation_power": "invalid_installation_power"}
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: 300, "installation_power": 1.4}
+        result["flow_id"], {CONF_SCAN_INTERVAL: "300", "installation_power": 1.4}
     )
     await hass.async_block_till_done()
     assert mock_config_entry.options == {
@@ -753,7 +775,7 @@ async def test_options_installation_power(
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert suggested(result, "installation_power") == 1.4
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: 300}
+        result["flow_id"], {CONF_SCAN_INTERVAL: "300"}
     )
     await hass.async_block_till_done()
     assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 300}
