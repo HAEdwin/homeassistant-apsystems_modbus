@@ -76,13 +76,11 @@
       "init": {
         "title": "Settings",
         "data": {
-          "scan_interval": "Poll interval",
-          "lifetime_energy": "Lifetime energy",
-          "peak_power": "Lifetime peak power",
+          "lifetime_energy": "Correct lifetime energy",
+          "peak_power": "Reset peak power",
           "installation_power": "Installation power"
         },
         "data_description": {
-          "scan_interval": "The ECU fetches new values from the inverters every 5 minutes. The integration reads them right after that. Polling less often lowers the load on the ECU.",
           "lifetime_energy": "Change only to correct the counter. It continues from the value you enter. The Energy dashboard shows the change once as production in that hour. You can adjust that hour under Settings → Tools → Statistics.",
           "peak_power": "Highest total power so far. Set to 0 to start over.",
           "installation_power": "Output of all inverters together, for example {count} × 0.73 = {ds3_l_kw} kW for DS3-L or {count} × 0.88 = {ds3_kw} kW for DS3. Leave empty to set the limit in percent only."
@@ -94,14 +92,8 @@
     }
   },
   "exceptions": {
-    "cannot_connect": {
-      "message": "No answer from the ECU at {host}. Check the IP address, connect the ECU by Ethernet cable and make sure Modbus is enabled on the ECU (EMA Manager, Local Access)."
-    },
     "link_in_use": {
       "message": "Another integration already uses the Modbus device at {host} with different connection settings."
-    },
-    "unsupported_layout": {
-      "message": "The device does not serve the register layout of a supported APsystems ECU ({details}). Please share a register dump in an issue."
     },
     "connection_lost": {
       "message": "The connection to the ECU was lost. It is retried at the next poll."
@@ -211,15 +203,6 @@
     "addresses_changed": {
       "title": "Inverter has a new address",
       "description": "Inverter {id} got a new address in the Modbus settings of EMA Manager ({old} → {new}). Its values are unavailable until you take this over. Choose Reconfigure in the menu of this integration. Devices and history are kept."
-    }
-  },
-  "selector": {
-    "scan_interval": {
-      "options": {
-        "300": "Every round (5 minutes)",
-        "600": "Every second round (10 minutes)",
-        "900": "Every third round (15 minutes)"
-      }
     }
   }
 }

@@ -26,13 +26,10 @@ class InverterConfig(TypedDict):
 
 
 DEFAULT_PORT = 502
-DEFAULT_SCAN_INTERVAL = 300
 
 ROUND_PERIOD = 300
 """Seconds between two ECU rounds. A round starts about 10 s past every fifth
 minute of the clock and refreshes the inverters one by one."""
-SCAN_INTERVAL_CHOICES = (300, 600, 900)
-"""Poll every round, every second round or every third round."""
 SETTLE_BASE = 30
 SETTLE_PER_INVERTER = 4
 SETTLE_MAX = 280

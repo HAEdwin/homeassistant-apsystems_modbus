@@ -412,7 +412,7 @@ class InverterEnergyTodaySensor(InverterEntity, SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return today's energy of this inverter."""
-        return _rounded(_kwh(self.coordinator.daily.get(self.unit_id)))
+        return _rounded(_kwh(self.coordinator.daily_today(self.unit_id)))
 
 
 class InverterLifetimeSensor(InverterEntity, SensorEntity):

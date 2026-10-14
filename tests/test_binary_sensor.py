@@ -25,7 +25,7 @@ async def test_online_and_grid_connection(
     set_float32(mock_ecu.for_unit(2), 40146, 0.0)
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert (
         hass.states.get("binary_sensor.inverter_704000000001_online").state == STATE_ON
@@ -48,13 +48,13 @@ async def test_grid_connection_unavailable_without_lead_inverter(
 ) -> None:
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     registry = er.async_get(hass)
     registry.async_update_entity(
         "binary_sensor.apsystems_ecu_inverters_enabled", disabled_by=None
     )
     await hass.config_entries.async_reload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     entity_id = "binary_sensor.apsystems_ecu_inverters_enabled"
     assert hass.states.get(entity_id).state == STATE_ON
 
@@ -62,10 +62,10 @@ async def test_grid_connection_unavailable_without_lead_inverter(
     coordinator = mock_config_entry.runtime_data
     mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get(entity_id).state == STATE_ON
 
     freezer.tick(timedelta(minutes=16))
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get(entity_id).state == STATE_UNAVAILABLE

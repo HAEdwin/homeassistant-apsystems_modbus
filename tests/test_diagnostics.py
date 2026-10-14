@@ -21,7 +21,7 @@ async def test_diagnostics_are_redacted(
 ) -> None:
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
     text = json.dumps(diagnostics, default=str)
@@ -30,15 +30,8 @@ async def test_diagnostics_are_redacted(
     assert "704000000001" not in text
     assert diagnostics["coordinator"]["available"] == [1, 2]
     assert set(diagnostics["coordinator"]["value_age_seconds"]) == {1, 2}
-    assert diagnostics["polling"] == {
-        "interval_s": 300,
-        "settle_s": 38,
-        "daytime_polls": 0,
-        "polls_without_news": 0,
-        "late_inverters": {},
-    }
+    assert diagnostics["polling"] == {"settle_s": 38}
     assert diagnostics["inverters"]["1"]["measurements"]["ac_power"] == 204.0
-    assert diagnostics["inverters"]["1"]["identity"]["model"] == "DS3"
     assert diagnostics["power_limit"] == {
         "control_unit": 1,
         "desired": None,
@@ -48,8 +41,7 @@ async def test_diagnostics_are_redacted(
         "last_rewrite": None,
         "refreshing": False,
         "next_refresh": None,
-        "refresh_count": 0,
+        "rewrites": 0,
         "installation_power_kw": None,
         "overshoot_refreshes": 0,
-        "last_refresh": None,
     }

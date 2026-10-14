@@ -7,7 +7,7 @@ from modbus_connection.mock import MockModbusConnection
 import pytest
 
 from homeassistant.config_entries import SOURCE_DHCP, SOURCE_USER
-from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT, CONF_SCAN_INTERVAL
+from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
@@ -48,7 +48,7 @@ async def submit_and_wait(hass: HomeAssistant, flow_id: str, user_input: dict) -
     """Submit a form that starts the search and return the step after it."""
     result = await hass.config_entries.flow.async_configure(flow_id, user_input)
     if result["type"] is FlowResultType.SHOW_PROGRESS:
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
         result = await hass.config_entries.flow.async_configure(flow_id)
     return result
 
@@ -244,6 +244,9 @@ async def test_dhcp_updates_host_of_known_ecu(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
     assert entry.data[CONF_HOST] == HOST
+    # The entry reloads on the new address; let it settle and stop again.
+    await hass.async_block_till_done(wait_background_tasks=True)
+    await hass.config_entries.async_unload(entry.entry_id)
 
 
 @pytest.mark.parametrize(
@@ -285,7 +288,7 @@ async def test_reconfigure(
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert mock_config_entry.data[CONF_HOST] == "192.0.2.11"
     assert [item["unit_id"] for item in mock_config_entry.data[CONF_INVERTERS]] == [1]
 
@@ -297,37 +300,15 @@ async def test_options_flow(
 ) -> None:
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert result["step_id"] == "init"
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: "600"}
+        result["flow_id"], {"installation_power": 1.4}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 600}
-
-
-async def test_old_poll_interval_is_shown_as_a_round(
-    hass: HomeAssistant, mock_ecu: MockModbusConnection
-) -> None:
-    entry = MockConfigEntry(
-        domain="apsystems_modbus",
-        title="APsystems ECU",
-        unique_id="704000000001",
-        data={"host": "192.0.2.10", "port": 502, CONF_INVERTERS: INVERTERS},
-        options={CONF_SCAN_INTERVAL: 120},
-    )
-    entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    assert entry.runtime_data.interval == 300
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    (field,) = (
-        key for key in result["data_schema"].schema if key == CONF_SCAN_INTERVAL
-    )
-    assert field.default() == "300"
+    assert mock_config_entry.options == {"installation_power": 1.4}
 
 
 @pytest.mark.parametrize(
@@ -419,7 +400,7 @@ async def test_reopened_form_keeps_connection(
     assert defaults[CONF_PORT] == 502
 
 
-async def test_dhcp_failure_returns_to_discovery_screen(
+async def test_dhcp_failure_offers_the_address_field(
     hass: HomeAssistant, mock_ecu: MockModbusConnection
 ) -> None:
     result = await hass.config_entries.flow.async_init(
@@ -429,19 +410,25 @@ async def test_dhcp_failure_returns_to_discovery_screen(
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
 
     result = await submit_and_wait(hass, result["flow_id"], {})
-    assert result["step_id"] == "dhcp_confirm"
+    assert result["step_id"] == "user"
     assert result["errors"] == {"base": "no_inverters"}
+    assert result["data_schema"]({})[CONF_HOST] == HOST
 
-    # Reopening the dialog shows the discovery screen again, not the manual form.
+    # Reopening the dialog shows the same form.
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
-    assert result["step_id"] == "dhcp_confirm"
+    assert result["step_id"] == "user"
 
-    # Confirming again runs the automatic search again.
+    # With the addresses entered the ECU is added, still with its MAC.
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(None)
-    result = await submit_and_wait(hass, result["flow_id"], {})
+    result = await submit_and_wait(
+        hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-2"}
+    )
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "2"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_MAC] == "80:97:1b:00:00:01"
 
 
 async def test_known_ecu_on_new_address_is_followed(
@@ -482,7 +469,7 @@ async def test_start_value_at_setup(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"lifetime_energy": 21971.04}
     )
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     state = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
     assert float(state.state) == pytest.approx(21971.04, abs=0.001)
@@ -506,7 +493,7 @@ async def test_stored_value_is_offered_when_adding_again(
     await hass.config_entries.flow.async_configure(
         result["flow_id"], {"lifetime_energy": 30000.0}
     )
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     state = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
     assert float(state.state) >= 30000.0
 
@@ -521,7 +508,7 @@ async def test_clearing_the_offered_value_starts_over(
     result = await start_user_flow(hass)
     result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
     await hass.config_entries.flow.async_configure(result["flow_id"], {})
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     state = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
     assert float(state.state) == pytest.approx(1.096, abs=0.001)
@@ -534,7 +521,7 @@ async def test_options_correct_lifetime_and_peak(
 ) -> None:
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert suggested(result, "lifetime_energy") == 1.1
@@ -542,14 +529,16 @@ async def test_options_correct_lifetime_and_peak(
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_SCAN_INTERVAL: "300", "lifetime_energy": 25000.0, "peak_power": 0},
+        {"lifetime_energy": 25000.0, "peak_power": 0},
     )
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 300}
+    assert mock_config_entry.options == {}
     ledger = mock_config_entry.runtime_data.ledger
     assert ledger.lifetime == pytest.approx(25_000_000, abs=1)
-    # Peak was reset to 0; the first poll after the reload sets it again.
+    # Peak was reset to 0; the next poll sets it again.
+    assert ledger.peak_power == 0
+    await mock_config_entry.runtime_data.async_refresh()
     assert ledger.peak_power == 710
 
 
@@ -560,19 +549,18 @@ async def test_options_unchanged_values_change_nothing(
 ) -> None:
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     before = mock_config_entry.runtime_data.ledger.lifetime
 
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
-            CONF_SCAN_INTERVAL: "300",
             "lifetime_energy": suggested(result, "lifetime_energy"),
             "peak_power": suggested(result, "peak_power"),
         },
     )
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert mock_config_entry.runtime_data.ledger.lifetime == pytest.approx(
         before, abs=1
     )
@@ -591,7 +579,7 @@ async def test_reconfigure_keeps_the_name(
     result = await entry.start_reconfigure_flow(hass)
     result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert result["reason"] == "reconfigure_successful"
     assert entry.title == "Solar ECU"
@@ -642,6 +630,20 @@ async def test_search_is_short_after_the_last_inverter(
     # The first silent address gets two tries, the next one a single try.
     assert len(mock_ecu.for_unit(3).read_events) == 2
     assert len(mock_ecu.for_unit(4).read_events) == 1
+
+
+async def test_search_finds_more_than_32_inverters(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    # An ECU-R serves up to 100 inverters; the search goes on while they answer.
+    for unit_id in range(3, 41):
+        add_inverter(mock_ecu, unit_id, f"703{unit_id:09d}")
+    for unit_id in (41, 42):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+    result = await start_user_flow(hass)
+
+    result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
+    assert result["description_placeholders"]["count"] == "40"
 
 
 async def test_identity_is_one_read_per_inverter(
@@ -762,31 +764,26 @@ async def test_options_installation_power(
 ) -> None:
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert suggested(result, "installation_power") is None
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: "300", "installation_power": 0.1}
+        result["flow_id"], {"installation_power": 0.1}
     )
     assert result["errors"] == {"installation_power": "invalid_installation_power"}
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: "300", "installation_power": 1.4}
+        result["flow_id"], {"installation_power": 1.4}
     )
-    await hass.async_block_till_done()
-    assert mock_config_entry.options == {
-        CONF_SCAN_INTERVAL: 300,
-        "installation_power": 1.4,
-    }
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert mock_config_entry.options == {"installation_power": 1.4}
 
     # Leaving it empty removes it again.
     result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
     assert suggested(result, "installation_power") == 1.4
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_SCAN_INTERVAL: "300"}
-    )
-    await hass.async_block_till_done()
-    assert mock_config_entry.options == {CONF_SCAN_INTERVAL: 300}
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert mock_config_entry.options == {}
 
 
 @pytest.mark.parametrize("language", ["nl", "de", "fr"])

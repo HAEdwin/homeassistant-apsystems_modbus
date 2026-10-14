@@ -76,13 +76,11 @@
       "init": {
         "title": "Paramètres",
         "data": {
-          "scan_interval": "Intervalle d'interrogation",
-          "lifetime_energy": "Énergie totale",
-          "peak_power": "Puissance maximale",
+          "lifetime_energy": "Corriger l'énergie totale",
+          "peak_power": "Réinitialiser la puissance maximale",
           "installation_power": "Puissance de l'installation"
         },
         "data_description": {
-          "scan_interval": "L'ECU récupère de nouvelles valeurs auprès des onduleurs toutes les 5 minutes. L'intégration les lit juste après. Interroger moins souvent soulage l'ECU.",
           "lifetime_energy": "À modifier uniquement pour corriger le compteur. Il continue à partir de la valeur saisie. Le tableau de bord Énergie affiche la modification une seule fois comme production de l'heure de la modification. Vous pouvez ajuster cette heure sous Paramètres → Outils → Statistiques.",
           "peak_power": "Puissance totale la plus élevée jusqu'à présent. Saisissez 0 pour recommencer.",
           "installation_power": "Puissance de tous les onduleurs ensemble, par exemple {count} × 0,73 = {ds3_l_kw} kW pour des DS3-L ou {count} × 0,88 = {ds3_kw} kW pour des DS3. Laissez vide pour régler la limite uniquement en pourcentage."
@@ -94,14 +92,8 @@
     }
   },
   "exceptions": {
-    "cannot_connect": {
-      "message": "Aucune réponse de l'ECU à l'adresse {host}. Vérifiez l'adresse IP, connectez l'ECU par câble Ethernet et vérifiez que Modbus est activé sur l'ECU (EMA Manager, Local Access)."
-    },
     "link_in_use": {
       "message": "Une autre intégration utilise déjà l'appareil Modbus à l'adresse {host} avec d'autres paramètres de connexion."
-    },
-    "unsupported_layout": {
-      "message": "L'appareil ne fournit pas la disposition des registres d'une ECU APsystems prise en charge ({details}). Merci de partager un relevé des registres dans une issue GitHub."
     },
     "connection_lost": {
       "message": "La connexion à l'ECU a été perdue. Une nouvelle tentative a lieu à la prochaine interrogation."
@@ -143,15 +135,6 @@
     "addresses_changed": {
       "title": "L'onduleur a une nouvelle adresse",
       "description": "L'onduleur {id} a reçu une nouvelle adresse dans Modbus settings d'EMA Manager ({old} → {new}). Ses valeurs restent indisponibles jusqu'à ce que vous preniez ce changement en compte. Choisissez Reconfigurer dans le menu de cette intégration. Les appareils et l'historique sont conservés."
-    }
-  },
-  "selector": {
-    "scan_interval": {
-      "options": {
-        "300": "À chaque cycle (5 minutes)",
-        "600": "Un cycle sur deux (10 minutes)",
-        "900": "Un cycle sur trois (15 minutes)"
-      }
     }
   }
 }

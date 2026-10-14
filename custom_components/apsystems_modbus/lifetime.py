@@ -109,6 +109,8 @@ class EnergyLedger:
     def __init__(self, hass: HomeAssistant, ecu_key: str) -> None:
         """Prepare the ledger for the ECU identified by ``ecu_key``."""
         self._store = _store(hass, ecu_key)
+        self._saved: _StoredLedger | None = None
+        """What was last loaded or written, so an unchanged state is not."""
         self._counters: dict[str, _Counter] = {}
         self._offset = 0.0
         self._reported = 0.0
@@ -134,6 +136,7 @@ class EnergyLedger:
     async def async_load(self) -> None:
         """Read the stored state."""
         data = await self._store.async_load() or {}
+        self._saved = data
         self._counters = {
             serial: _Counter(
                 base=values.get("base") or 0.0,
@@ -150,11 +153,19 @@ class EnergyLedger:
 
     async def async_save(self) -> None:
         """Write the state now."""
-        await self._store.async_save(self._as_data())
+        self._saved = self._as_data()
+        await self._store.async_save(self._saved)
 
     def schedule_save(self) -> None:
-        """Write the state soon, bundling the changes of several polls."""
-        self._store.async_delay_save(self._as_data, SAVE_DELAY)
+        """Write the state soon if it changed, bundling several polls.
+
+        At night nothing changes, so nothing is written to disk.
+        """
+        data = self._as_data()
+        if data == self._saved:
+            return
+        self._saved = data
+        self._store.async_delay_save(lambda: data, SAVE_DELAY)
 
     def record_daily(
         self, serial: str, watt_hours: float, day: date | None = None

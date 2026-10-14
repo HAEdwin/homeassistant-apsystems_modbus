@@ -22,7 +22,7 @@ from .conftest import INVERTERS, set_float32
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_ecu_totals(
@@ -147,7 +147,7 @@ async def test_missing_inverter_goes_unavailable_totals_stay(
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
     set_float32(mock_ecu.for_unit(1), 40144, 300.0)
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert hass.states.get("sensor.inverter_703000000002_power").state == "506.0"
     assert hass.states.get("sensor.inverter_704000000001_power").state == "300.0"
@@ -160,7 +160,7 @@ async def test_missing_inverter_goes_unavailable_totals_stay(
     set_float32(mock_ecu.for_unit(1), 40144, 204.0)
     freezer.tick(timedelta(minutes=16))
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert (
         hass.states.get("sensor.inverter_703000000002_power").state == STATE_UNAVAILABLE
@@ -191,7 +191,7 @@ async def test_removed_inverter_device_is_cleaned_up(
         data={**mock_config_entry.data, CONF_INVERTERS: INVERTERS[:1]},
     )
     await hass.config_entries.async_reload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert (
         registry.async_get_device_by_identifier(
@@ -233,13 +233,13 @@ async def test_lifetime_stays_available_while_ecu_is_unreachable(
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert coordinator.last_update_success is True
     assert hass.states.get("sensor.apsystems_ecu_power").state == "710.0"
 
     freezer.tick(timedelta(minutes=16))
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert coordinator.last_update_success is False
     assert hass.states.get("sensor.apsystems_ecu_power").state == STATE_UNAVAILABLE
@@ -255,7 +255,7 @@ async def test_lifetime_survives_removing_and_adding_again(
     await setup_entry(hass, mock_config_entry)
     mock_config_entry.runtime_data.ledger.calibrate(21_971_040)
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     again = MockConfigEntry(
         domain=DOMAIN, unique_id="704000000001", data=dict(mock_config_entry.data)
@@ -278,7 +278,7 @@ async def test_energy_today_follows_the_ecu_and_lifetime_stays_guarded(
     for unit_id in (1, 2):
         set_float32(mock_ecu.for_unit(unit_id), 40154, 0.0)
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert float(hass.states.get("sensor.apsystems_ecu_energy_today").state) == 0.0
     assert (
@@ -292,7 +292,7 @@ async def test_energy_today_follows_the_ecu_and_lifetime_stays_guarded(
     # the lifetime does not count it again.
     set_float32(mock_ecu.for_unit(1), 40154, 554.08)
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert float(
         hass.states.get("sensor.inverter_704000000001_energy_today").state
@@ -326,7 +326,7 @@ async def test_impossible_daily_counter_is_left_out(
 
     set_float32(mock_ecu.for_unit(1), 40154, 3.0e9)
     await coordinator.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert float(
         hass.states.get("sensor.inverter_704000000001_energy_today").state

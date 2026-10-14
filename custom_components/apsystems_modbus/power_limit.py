@@ -21,10 +21,11 @@ only the last one partly shows, as a failed poll. So:
   Assistant and a reload.
 * While a choice exists, the ECU is made to follow it: once two polls in a
   row read something else, the choice is written again, at most once per
-  ten minutes. A failed user write is retried at the next usable poll.
+  ten minutes and at most ``MAX_REWRITES`` times; then it waits for a new
+  choice. A failed user write is retried at the next usable poll.
 * The choice is sent again ("refreshed") 15 and 75 minutes after it was set,
-  once after Home Assistant starts, and, below 100, after a poll found the
-  ECU unreachable, which is how a restart of the ECU shows. The ECU only
+  once after Home Assistant starts, and, below 100, after the connection to
+  the ECU broke, which is how a restart of the ECU shows. The ECU only
   passes a changed percentage on to the inverters, so a refresh writes one
   percent less (or more, at 0), waits at least one ECU round and then writes
   the chosen value again. The in-between value is not shown.
@@ -53,11 +54,7 @@ from modbus_connection import ModbusError
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import (
-    entity_registry as er,
-    issue_registry as ir,
-    restore_state,
-)
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -75,6 +72,8 @@ CONFIRM_POLLS = 2
 """Polls in a row that must agree before a changed readback is adopted."""
 REWRITE_INTERVAL = timedelta(minutes=10)
 """Least time between two corrective writes after a deviating readback."""
+MAX_REWRITES = 3
+"""Corrective writes for one choice before waiting for the user instead."""
 REFRESH_DELAY = timedelta(minutes=15)
 """Time from a change to its first refresh; a change can take ~12 min to arrive."""
 REFRESH_REPEAT = timedelta(hours=1)
@@ -103,6 +102,14 @@ def store_for(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
     return Store(hass, STORAGE_VERSION, f"{DOMAIN}.power_limit.{entry_id}")
 
 
+def stored_choice(stored: dict[str, Any] | None) -> int | None:
+    """Return the limit kept in the store, or None if there is none."""
+    desired = (stored or {}).get("desired")
+    if type(desired) is not int or not 0 <= desired <= NO_LIMIT:
+        return None
+    return desired
+
+
 def issue_id_for(entry_id: str) -> str:
     """Return the repair issue id asking to check the installation power."""
     return f"check_installation_power_{entry_id}"
@@ -119,8 +126,6 @@ class _Refresh:
     step_written: datetime | None = None
     """When the in-between value of the refresh under way was written."""
     last_started: datetime | None = None
-    count: int = 0
-    """Refreshes started since the integration was loaded."""
 
 
 def effective_limit(measurements: Measurements) -> int | None:
@@ -165,6 +170,8 @@ class PowerLimit:
         self.deviations = 0
         """Polls in a row that read the same value other than ``shown``."""
         self.last_rewrite: datetime | None = None
+        self.rewrites = 0
+        """Corrective writes since the ECU last reported the chosen limit."""
         self.overshoot_refreshes = 0
         """Refreshes since the last change because an inverter was above the limit."""
         self._deviating: int | None = None
@@ -186,16 +193,6 @@ class PowerLimit:
         return self._refresh.step_written is not None
 
     @property
-    def refresh_count(self) -> int:
-        """Refreshes started since the integration was loaded."""
-        return self._refresh.count
-
-    @property
-    def last_refresh(self) -> datetime | None:
-        """When the last refresh wrote its in-between value."""
-        return self._refresh.last_started
-
-    @property
     def installation_power(self) -> float | None:
         """Output of all inverters together in kW, if the user entered it."""
         power = self._coordinator.config_entry.options.get(CONF_INSTALLATION_POWER)
@@ -210,47 +207,19 @@ class PowerLimit:
         """
         if self._store is None:
             return
-        stored = await self._store.async_load()
-        desired = (stored or {}).get("desired")
-        upgrade = desired is None
-        if upgrade:
-            desired = self._choice_from_0_3_4()
-        if type(desired) is not int or not 0 <= desired <= NO_LIMIT:
+        desired = stored_choice(await self._store.async_load())
+        if desired is None:
             return
         self.desired = desired
-        if upgrade:
-            # Home Assistant drops the old restore data at the next stop.
-            self._remember()
         if desired < NO_LIMIT:
             self._plan_refreshes(dt_util.utcnow(), delay=timedelta(0), count=1)
 
-    def _choice_from_0_3_4(self) -> object:
-        """Return the choice version 0.3.4 kept with the number entity, if any.
-
-        Kept for one upgrade: the choice is then stored the new way. Remove
-        in 0.5, together with the ``restore_state`` import.
-        """
-        hass = self._coordinator.hass
-        entry = self._coordinator.config_entry
-        entity_id = er.async_get(hass).async_get_entity_id(
-            "number", DOMAIN, f"ecu-{entry.unique_id}-power_limit"
-        )
-        if entity_id is None:
-            return None
-        last = restore_state.async_get(hass).last_states.get(entity_id)
-        if last is None or last.extra_data is None:
-            return None
-        extra = last.extra_data.as_dict()
-        if extra.get("entry_id") != entry.entry_id:
-            return None
-        return extra.get("desired")
-
     def note_silent_ecu(self) -> None:
-        """Record that a poll found the ECU unreachable.
+        """Record that the connection to the ECU broke.
 
         A restart of the ECU clears the limit on the inverters and breaks
-        the open connection, so the first poll after it fails. The limit is
-        then sent again once the ECU answers.
+        the open connection. The limit is then sent again once the ECU
+        answers.
         """
         self._ecu_was_silent = True
 
@@ -278,6 +247,7 @@ class PowerLimit:
             now = dt_util.utcnow()
             # A new choice gets fresh chances before the user is told.
             self._reset_overshoot()
+            self.rewrites = 0
             try:
                 await self._async_write(percent)
             except ModbusError as err:
@@ -288,8 +258,9 @@ class PowerLimit:
                     "Power limit %s %% did not reach the ECU (%s); "
                     "it is written again at the next poll",
                     percent,
-                    err,
+                    type(err).__name__,
                 )
+                _LOGGER.debug("Writing power limit %s %% failed: %s", percent, err)
                 raise HomeAssistantError(
                     translation_domain=DOMAIN,
                     translation_key="power_limit_pending",
@@ -304,19 +275,14 @@ class PowerLimit:
 
         Below 100 the percentage goes first and the flag switches it on; at
         100 the percentage is reset and the flag switched off. So a failed
-        second write never limits more than asked. The second write gets one
-        immediate retry. ``show`` makes the written value the
-        shown one; the in-between value of a refresh is not shown.
+        second write never limits more than asked; the next poll completes
+        it. ``show`` makes the written value the shown one; the in-between
+        value of a refresh is not shown.
         """
         async with self._coordinator.write_lock:
             await self.control.async_set_export_limit(percent)
-        enabled = percent < NO_LIMIT
-        try:
-            async with self._coordinator.write_lock:
-                await self.control.async_set_export_limit_enabled(enabled)
-        except ModbusError:
-            async with self._coordinator.write_lock:
-                await self.control.async_set_export_limit_enabled(enabled)
+        async with self._coordinator.write_lock:
+            await self.control.async_set_export_limit_enabled(percent < NO_LIMIT)
         # What the inverters delivered before this write says nothing any more.
         self._over_last_poll = set()
         if show:
@@ -363,6 +329,7 @@ class PowerLimit:
         if reported == self.desired:
             self._adopt(reported)
             self.pending = False
+            self.rewrites = 0
         elif self.shown is None or reported == self.shown:
             self._adopt(reported)
         elif reported == self._deviating:
@@ -392,14 +359,14 @@ class PowerLimit:
             return
 
         # Retry a failed write, or write again once the ECU has stably
-        # reported another value.
-        if (
-            reported != self.desired
-            and (self.pending or self.shown == reported)
-            and not self._rewrote_recently(now)
-        ):
-            await self._async_rewrite(reported, now)
-            return
+        # reported another value. An ECU that keeps reporting another value
+        # is not written over and over; a new choice tries again.
+        if reported != self.desired and (self.pending or self.shown == reported):
+            if self.rewrites >= MAX_REWRITES:
+                return
+            if not self._rewrote_recently(now):
+                await self._async_rewrite(reported, now)
+                return
 
         self._check_overshoot(data, now)
 
@@ -554,6 +521,15 @@ class PowerLimit:
             self.pending = False
             self._last_written = now
             self._plan_refreshes(now)
+            self.rewrites += 1
+        if self.rewrites >= MAX_REWRITES:
+            _LOGGER.warning(
+                "The ECU keeps reporting a power limit of %s %% instead of %s %%; "
+                "no more writes until the limit is chosen again",
+                reported,
+                desired,
+            )
+            return
         _LOGGER.info(
             "The ECU reported a power limit of %s %%; set it back to %s %%",
             reported,
@@ -582,7 +558,6 @@ class PowerLimit:
                 return
             self._refresh.step_written = dt_util.utcnow()
             self._refresh.last_started = now
-            self._refresh.count += 1
         _LOGGER.debug("Refreshing power limit %s %% via %s %%", desired, step)
 
     async def _async_finish_refresh(self, now: datetime) -> None:

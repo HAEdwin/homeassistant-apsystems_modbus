@@ -76,13 +76,11 @@
       "init": {
         "title": "Einstellungen",
         "data": {
-          "scan_interval": "Abfrageintervall",
-          "lifetime_energy": "Gesamtenergie",
-          "peak_power": "Spitzenleistung",
+          "lifetime_energy": "Gesamtenergie korrigieren",
+          "peak_power": "Spitzenleistung zurücksetzen",
           "installation_power": "Anlagenleistung"
         },
         "data_description": {
-          "scan_interval": "Die ECU holt alle 5 Minuten neue Werte von den Wechselrichtern. Die Integration liest sie direkt danach aus. Selteneres Auslesen entlastet die ECU.",
           "lifetime_energy": "Nur ändern, um den Zähler zu korrigieren. Er zählt ab dem eingegebenen Wert weiter. Das Energie-Dashboard zeigt die Änderung einmalig als Erzeugung in der Stunde der Änderung. Diese Stunde kannst du unter Einstellungen → Werkzeuge → Statistik anpassen.",
           "peak_power": "Höchste Gesamtleistung bisher. Auf 0 setzen, um neu zu beginnen.",
           "installation_power": "Leistung aller Wechselrichter zusammen, zum Beispiel {count} × 0,73 = {ds3_l_kw} kW für DS3-L oder {count} × 0,88 = {ds3_kw} kW für DS3. Leer lassen, um die Begrenzung nur in Prozent einzustellen."
@@ -94,14 +92,8 @@
     }
   },
   "exceptions": {
-    "cannot_connect": {
-      "message": "Keine Antwort von der ECU unter {host}. Prüfe die IP-Adresse, verbinde die ECU per Netzwerkkabel und achte darauf, dass Modbus auf der ECU aktiviert ist (EMA Manager, Local Access)."
-    },
     "link_in_use": {
       "message": "Eine andere Integration nutzt das Modbus-Gerät unter {host} bereits mit anderen Verbindungseinstellungen."
-    },
-    "unsupported_layout": {
-      "message": "Das Gerät bietet nicht das Registerlayout einer unterstützten APsystems ECU ({details}). Bitte teile einen Register-Dump in einem Issue."
     },
     "connection_lost": {
       "message": "Die Verbindung zur ECU wurde unterbrochen. Bei der nächsten Abfrage wird es erneut versucht."
@@ -143,15 +135,6 @@
     "addresses_changed": {
       "title": "Wechselrichter hat eine neue Adresse",
       "description": "Wechselrichter {id} hat in den Modbus settings von EMA Manager eine neue Adresse bekommen ({old} → {new}). Bis du das übernimmst, sind seine Werte nicht verfügbar. Wähle Neu konfigurieren im Menü dieser Integration. Geräte und Verlauf bleiben erhalten."
-    }
-  },
-  "selector": {
-    "scan_interval": {
-      "options": {
-        "300": "Jeder Zyklus (5 Minuten)",
-        "600": "Jeder zweite Zyklus (10 Minuten)",
-        "900": "Jeder dritte Zyklus (15 Minuten)"
-      }
     }
   }
 }

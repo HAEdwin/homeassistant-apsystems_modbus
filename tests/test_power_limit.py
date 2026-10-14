@@ -18,13 +18,12 @@ from homeassistant.components.number import (
     SERVICE_SET_VALUE,
 )
 from homeassistant.const import ATTR_ENTITY_ID, STATE_UNKNOWN, EntityCategory
-from homeassistant.core import HomeAssistant, State
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
-    mock_restore_cache_with_extra_data,
 )
 
 from custom_components.apsystems_modbus.const import (
@@ -56,7 +55,7 @@ ENTITY = "number.apsystems_ecu_power_limit"
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> EcuCoordinator:
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     return entry.runtime_data
 
 
@@ -296,9 +295,9 @@ async def test_failed_second_write_at_100_is_not_undone(
         await set_limit(hass, 100)
 
     # The percentage landed, the flag did not: 1000 with enable is full power.
-    # The flag was tried exactly twice: once plus one retry.
+    # The flag is not tried again at once; the next poll takes care of it.
     assert writes == [(EXPORT_LIMIT_ADDRESS, 1000)]
-    assert attempts.count(EXPORT_LIMIT_ENABLED_ADDRESS) == 2
+    assert attempts.count(EXPORT_LIMIT_ENABLED_ADDRESS) == 1
     assert coordinator.power_limit.desired == 100
     assert coordinator.power_limit.pending is True
 
@@ -481,6 +480,36 @@ async def test_restore_happens_at_most_every_ten_minutes(
     assert len(writes) == 4
 
 
+async def test_a_stubborn_ecu_is_not_written_over_and_over(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
+    unit = mock_ecu.for_unit(1)
+    writes = record_writes(unit)
+
+    # Whatever is written, the ECU keeps reporting no limit.
+    unit.on_write(lambda event: set_ecu(unit, 100, 48))
+    set_ecu(unit, 100, 48)
+    for _ in range(10):
+        await coordinator.async_refresh()
+        freezer.tick(REWRITE_INTERVAL + timedelta(seconds=1))
+    # Three tries, then it waits for the user.
+    assert len(writes) == 6
+    assert "no more writes until the limit is chosen again" in caplog.text
+
+    # A new choice tries again.
+    await set_limit(hass, 40)
+    assert writes[6:] == [
+        (EXPORT_LIMIT_ADDRESS, 400),
+        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
+    ]
+
+
 async def test_no_choice_means_no_write(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
@@ -509,7 +538,7 @@ async def test_reload_keeps_the_choice_and_refreshes_it(
 
     writes = record_writes(mock_ecu.for_unit(1))
     await hass.config_entries.async_reload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert attributes_of(hass)["desired"] == 30
     # The ECU may have restarted meanwhile: the choice is sent again at once.
@@ -683,31 +712,37 @@ async def test_removal_releases_an_active_limit(
     mock_config_entry: MockConfigEntry,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
     unit = mock_ecu.for_unit(1)
-    set_ecu(unit, 30, 49)
     writes = record_writes(unit)
     unit.read_events.clear()
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert len(unit.read_events) == 1
     assert writes == [(EXPORT_LIMIT_ADDRESS, 1000), (EXPORT_LIMIT_ENABLED_ADDRESS, 0)]
     assert not notifications(hass)
 
 
-async def test_removal_without_a_limit_only_reads(
+async def test_removal_without_a_limit_leaves_the_ecu_alone(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
-    writes = record_writes(mock_ecu.for_unit(1))
+    # A limit set by someone else, for example the installer.
+    unit = mock_ecu.for_unit(1)
+    set_ecu(unit, 30, 49)
+    writes = record_writes(unit)
+    unit.read_events.clear()
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
+    assert unit.read_events == []
     assert writes == []
+    assert not notifications(hass)
 
 
 async def test_removal_tries_the_next_inverter_when_the_first_is_silent(
@@ -716,13 +751,14 @@ async def test_removal_tries_the_next_inverter_when_the_first_is_silent(
     mock_config_entry: MockConfigEntry,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
     mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
     unit_2 = mock_ecu.for_unit(2)
     set_ecu(unit_2, 30, 49)
     writes = record_writes(unit_2)
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert writes == [(EXPORT_LIMIT_ADDRESS, 1000), (EXPORT_LIMIT_ENABLED_ADDRESS, 0)]
 
@@ -734,11 +770,12 @@ async def test_removal_warns_when_the_ecu_is_silent(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert mock_config_entry.entry_id not in {
         e.entry_id for e in hass.config_entries.async_entries()
@@ -764,7 +801,7 @@ async def test_grid_connection_is_never_written(
     await coordinator.async_refresh()
     assert coordinator.last_update_success is True
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert events
     assert all(event.address != GRID_CONNECTION_ADDRESS for event in events)
@@ -844,12 +881,13 @@ async def test_removal_does_not_write_on_an_unreadable_limit(
     mock_config_entry: MockConfigEntry,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
     unit = mock_ecu.for_unit(1)
     unit.holding[EXPORT_LIMIT_ENABLED_ADDRESS] = 7
     writes = record_writes(unit)
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert writes == []
     assert len(notifications(hass)) == 1
@@ -888,7 +926,6 @@ async def test_refresh_sends_the_limit_again_via_one_percent_less(
         (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
     ]
     assert coordinator.power_limit.refreshing is False
-    assert coordinator.power_limit.refresh_count == 1
     assert state_of(hass) == "30"
 
 
@@ -966,7 +1003,6 @@ async def test_two_refreshes_per_change_then_none(
         freezer.tick(REFRESH_REPEAT)
         await coordinator.async_refresh()
     assert len(writes) == 8
-    assert coordinator.power_limit.refresh_count == 2
     assert coordinator.power_limit.next_refresh is None
 
 
@@ -1107,9 +1143,9 @@ async def test_silent_ecu_below_100_refreshes_once_it_answers(
     await set_limit(hass, 30)
     writes = record_writes(mock_ecu.for_unit(1))
 
-    # A restart of the ECU: nothing answers for a while.
+    # A restart of the ECU breaks the connection for a while.
     for unit_id in (1, 2):
-        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusConnectionError("restart"))
     await coordinator.async_refresh()
     assert coordinator.data.available == set()
     for unit_id in (1, 2):
@@ -1117,6 +1153,26 @@ async def test_silent_ecu_below_100_refreshes_once_it_answers(
 
     await coordinator.async_refresh()
     assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+
+
+async def test_quiet_evening_does_not_refresh(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
+    writes = record_writes(mock_ecu.for_unit(1))
+
+    # At dusk the ECU often stops answering without dropping the connection.
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(None)
+    await coordinator.async_refresh()
+
+    assert writes == []
 
 
 async def test_silent_ecu_at_100_does_not_refresh(
@@ -1168,7 +1224,7 @@ async def test_lost_connection_is_reopened_in_the_same_poll(
     assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
 
 
-async def test_connection_lost_twice_fails_the_poll(
+async def test_connection_lost_twice_ends_the_poll(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
@@ -1182,7 +1238,10 @@ async def test_connection_lost_twice_fails_the_poll(
     inverter.async_poll = always_lost  # type: ignore[method-assign]
     await coordinator.async_refresh()
 
-    assert coordinator.last_update_success is False
+    # Unit 1 comes first and the link stays down: nothing new, the values of
+    # the last poll stay shown for now.
+    assert coordinator.data.link_lost is True
+    assert coordinator.data.available == set()
 
 
 def store_choice(hass_storage: dict, entry: MockConfigEntry, data: dict) -> None:
@@ -1206,7 +1265,7 @@ async def test_choice_is_restored_after_a_restart(
     set_ecu(mock_ecu.for_unit(1), 30, 49)
     writes = record_writes(mock_ecu.for_unit(1))
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     coordinator: EcuCoordinator = mock_config_entry.runtime_data
 
     # The ECU may have restarted meanwhile: the first poll sends it again.
@@ -1232,7 +1291,7 @@ async def test_choice_is_kept_with_the_number_disabled(
         disabled_by=er.RegistryEntryDisabler.USER,
     )
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert hass.states.get(ENTITY) is None
     assert mock_config_entry.runtime_data.power_limit.desired == 30
@@ -1250,7 +1309,7 @@ async def test_factory_value_after_a_power_cut_is_put_back(
     set_ecu(unit, 30, 1)  # the ECU's factory value
     writes = record_writes(unit)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     coordinator: EcuCoordinator = mock_config_entry.runtime_data
 
     # The first poll after the start writes the remembered 100 back.
@@ -1273,7 +1332,7 @@ async def test_unusable_stored_choice_is_ignored(
     store_choice(hass_storage, mock_config_entry, stored)
     writes = record_writes(mock_ecu.for_unit(1))
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     coordinator: EcuCoordinator = mock_config_entry.runtime_data
 
     await coordinator.async_refresh()
@@ -1291,12 +1350,12 @@ async def test_removal_forgets_the_choice(
     await set_limit(hass, 30)
     # Unloading writes the store at once.
     await hass.config_entries.async_reload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     key = f"apsystems_modbus.power_limit.{mock_config_entry.entry_id}"
     assert hass_storage[key]["data"] == {"desired": 30}
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert key not in hass_storage
 
 
@@ -1365,7 +1424,7 @@ async def test_lost_connection_refreshes_at_most_once_an_hour(
 
     def silent_ecu() -> None:
         for unit_id in (1, 2):
-            mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+            mock_ecu.for_unit(unit_id).fail_requests(ModbusConnectionError("down"))
 
     def ecu_back() -> None:
         for unit_id in (1, 2):
@@ -1592,7 +1651,7 @@ async def test_restart_soon_after_a_refresh_is_postponed_not_dropped(
     # The ECU restarts 25 minutes after the last refresh started.
     freezer.tick(timedelta(minutes=19))
     for unit_id in (1, 2):
-        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusConnectionError("restart"))
     await coordinator.async_refresh()
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(None)
@@ -1639,12 +1698,13 @@ async def test_removal_notice_is_in_the_users_language(
     opening: str,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
     await hass.config.async_update(language=language)
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     (notice,) = notifications(hass).values()
     assert notice["message"].startswith(opening)
@@ -1688,7 +1748,7 @@ async def test_reload_clears_the_installation_power_notice(
 
     # Saving the options reloads the integration, which checks afresh.
     await hass.config_entries.async_reload(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert ir.async_get(hass).async_get_issue("apsystems_modbus", issue_id) is None
 
 
@@ -1719,65 +1779,6 @@ async def test_overshoot_count_holds_until_a_new_choice(
     assert coordinator.power_limit.overshoot_refreshes == 0
 
 
-async def test_choice_of_version_0_3_4_is_taken_over(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-    hass_storage: dict,
-    freezer: FrozenDateTimeFactory,
-) -> None:
-    mock_config_entry.add_to_hass(hass)
-    er.async_get(hass).async_get_or_create(
-        NUMBER_DOMAIN,
-        "apsystems_modbus",
-        "ecu-704000000001-power_limit",
-        config_entry=mock_config_entry,
-        suggested_object_id="apsystems_ecu_power_limit",
-    )
-    mock_restore_cache_with_extra_data(
-        hass,
-        [
-            (
-                State(ENTITY, "30"),
-                {"desired": 30, "entry_id": mock_config_entry.entry_id},
-            )
-        ],
-    )
-    set_ecu(mock_ecu.for_unit(1), 30, 49)
-    await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
-    assert mock_config_entry.runtime_data.power_limit.desired == 30
-
-    # Stored the new way, since the old data is gone after the next stop.
-    freezer.tick(timedelta(seconds=1))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
-    key = f"apsystems_modbus.power_limit.{mock_config_entry.entry_id}"
-    assert hass_storage[key]["data"] == {"desired": 30}
-
-
-async def test_choice_of_another_entry_is_not_taken_over(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    mock_config_entry.add_to_hass(hass)
-    er.async_get(hass).async_get_or_create(
-        NUMBER_DOMAIN,
-        "apsystems_modbus",
-        "ecu-704000000001-power_limit",
-        config_entry=mock_config_entry,
-        suggested_object_id="apsystems_ecu_power_limit",
-    )
-    mock_restore_cache_with_extra_data(
-        hass, [(State(ENTITY, "30"), {"desired": 30, "entry_id": "removed"})]
-    )
-    await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    assert mock_config_entry.runtime_data.power_limit.desired is None
-
-
 async def test_choice_is_stored_without_waiting_for_a_stop(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
@@ -1789,7 +1790,7 @@ async def test_choice_is_stored_without_waiting_for_a_stop(
     await set_limit(hass, 30)
     freezer.tick(timedelta(seconds=1))
     async_fire_time_changed(hass)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     key = f"apsystems_modbus.power_limit.{mock_config_entry.entry_id}"
     assert hass_storage[key]["data"] == {"desired": 30}
@@ -1805,7 +1806,7 @@ async def test_no_refresh_at_the_start_without_a_limit(
     store_choice(hass_storage, mock_config_entry, {"desired": 100})
     writes = record_writes(mock_ecu.for_unit(1))
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     # Saving the options reloads the integration: no 99 % step at 100.
     assert writes == []
@@ -1833,7 +1834,7 @@ async def test_kw_number_goes_when_the_installation_power_is_cleared(
 
     hass.config_entries.async_update_entry(entry, options={})
     await hass.config_entries.async_reload(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert er.async_get(hass).async_get(ENTITY_KW) is None
     assert hass.states.get(ENTITY_KW) is None

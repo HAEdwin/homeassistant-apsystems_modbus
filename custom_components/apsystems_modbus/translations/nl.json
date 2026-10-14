@@ -76,13 +76,11 @@
       "init": {
         "title": "Instellingen",
         "data": {
-          "scan_interval": "Interval",
-          "lifetime_energy": "Totale opbrengst",
-          "peak_power": "Piekvermogen ooit",
+          "lifetime_energy": "Totale opbrengst corrigeren",
+          "peak_power": "Piekvermogen opnieuw instellen",
           "installation_power": "Installatievermogen"
         },
         "data_description": {
-          "scan_interval": "De ECU haalt elke 5 minuten nieuwe waarden op bij de omvormers. De integratie leest ze direct daarna uit. Minder vaak uitlezen ontlast de ECU.",
           "lifetime_energy": "Alleen aanpassen om de teller te corrigeren. Hij telt verder vanaf de waarde die je invult. Het Energy-dashboard toont de wijziging één keer als opbrengst in dat uur. Dat uur kun je aanpassen onder Instellingen → Hulpmiddelen → Statistieken.",
           "peak_power": "Hoogste totaalvermogen tot nu toe. Zet op 0 om opnieuw te beginnen.",
           "installation_power": "Vermogen van alle omvormers samen, bijvoorbeeld {count} × 0,73 = {ds3_l_kw} kW voor DS3-L of {count} × 0,88 = {ds3_kw} kW voor DS3. Leeg laten kan, dan stel je de limiet alleen in procenten in."
@@ -94,14 +92,8 @@
     }
   },
   "exceptions": {
-    "cannot_connect": {
-      "message": "Geen antwoord van de ECU op {host}. Controleer het IP-adres, sluit de ECU aan via een netwerkkabel en zet Modbus aan op de ECU (EMA Manager, Lokale toegang)."
-    },
     "link_in_use": {
       "message": "Een andere integratie gebruikt het Modbus-apparaat op {host} al met andere verbindingsinstellingen."
-    },
-    "unsupported_layout": {
-      "message": "Het apparaat heeft niet de registerindeling van een ondersteunde APsystems ECU ({details}). Deel een registerdump in een issue."
     },
     "connection_lost": {
       "message": "De verbinding met de ECU is verbroken. Bij de volgende uitlezing wordt het opnieuw geprobeerd."
@@ -143,15 +135,6 @@
     "addresses_changed": {
       "title": "Omvormer heeft een nieuw adres",
       "description": "Omvormer {id} heeft in de Modbus-instellingen van EMA Manager een nieuw adres gekregen ({old} → {new}). Tot je dit overneemt, zijn de waarden niet beschikbaar. Kies Herconfigureer in het menu van deze integratie. Apparaten en historie blijven behouden."
-    }
-  },
-  "selector": {
-    "scan_interval": {
-      "options": {
-        "300": "Elke ronde (5 minuten)",
-        "600": "Elke tweede ronde (10 minuten)",
-        "900": "Elke derde ronde (15 minuten)"
-      }
     }
   }
 }

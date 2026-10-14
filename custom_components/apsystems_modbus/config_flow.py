@@ -22,7 +22,6 @@ import probatio
 
 from homeassistant.components.modbus import async_get_temporary_unit
 from homeassistant.config_entries import (
-    SOURCE_DHCP,
     SOURCE_RECONFIGURE,
     ConfigEntry,
     ConfigEntryState,
@@ -30,7 +29,7 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
-from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT, CONF_SCAN_INTERVAL
+from homeassistant.const import CONF_HOST, CONF_MAC, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
     config_validation as cv,
@@ -50,13 +49,11 @@ from .const import (
     CONF_UNIT_ID,
     CONF_UNIT_IDS,
     DEFAULT_PORT,
-    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_POWER_PER_INVERTER,
     MIN_POWER_PER_INVERTER,
-    SCAN_INTERVAL_CHOICES,
 )
-from .coordinator import new_address_issue_id, round_interval
+from .coordinator import new_address_issue_id
 from .ecu import (
     SUNSPEC_MARKER,
     Identity,
@@ -76,7 +73,8 @@ READ_ATTEMPTS = 3
 than one probe timeout while it polls its inverters. The timeout itself stays
 the same during the search, so the connection is never rebuilt halfway."""
 SCAN_START = 1
-SCAN_LIMIT = 32
+SCAN_LIMIT = 100
+"""Highest address searched: an ECU-R serves up to 100 inverters."""
 SCAN_STOP_AFTER_MISSES = 2
 MIN_UNIT_ID = 1
 MAX_UNIT_ID = 247
@@ -433,13 +431,8 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
         """Show why probing failed on the screen the search started from."""
         errors = {"base": self._probe_error or "unknown"}
         self._probe_error = None
-        if self.source == SOURCE_DHCP:
-            # A discovered ECU retries the automatic path, not the manual form.
-            return self.async_show_form(
-                step_id="dhcp_confirm",
-                description_placeholders={CONF_HOST: self._host},
-                errors=errors,
-            )
+        # Also a discovered ECU gets the form with the address field, so the
+        # addresses can be entered when the search finds nothing.
         step_id = "reconfigure" if self.source == SOURCE_RECONFIGURE else "user"
         return self.async_show_form(
             step_id=step_id,
@@ -721,7 +714,7 @@ class ApsystemsModbusConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class ApsystemsOptionsFlow(OptionsFlowWithReload):
-    """Poll interval, plus corrections of lifetime energy and peak power.
+    """Installation power, plus corrections of lifetime energy and peak power.
 
     The energy and power fields are not options: they correct the stored totals
     once and are shown with the current values, so leaving them alone changes
@@ -746,9 +739,7 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
             else:
                 if loaded:
                     await self._apply_corrections(user_input)
-                options: dict[str, Any] = {
-                    CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL])
-                }
+                options: dict[str, Any] = {}
                 if power is not None:
                     options[CONF_INSTALLATION_POWER] = round(power, 1)
                 return self.async_create_entry(data=options)
@@ -776,7 +767,7 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                self._options_schema(fields), suggested
+                probatio.Schema(fields), suggested
             ),
             errors=errors,
             description_placeholders=_power_placeholders(self.hass, inverters),
@@ -794,26 +785,3 @@ class ApsystemsOptionsFlow(OptionsFlowWithReload):
         await ledger.async_save()
         # Show the corrected values now, also when nothing else changed.
         self.config_entry.runtime_data.async_update_listeners()
-
-    def _options_schema(self, extra: dict[Any, Any]) -> probatio.Schema:
-        return probatio.Schema(
-            {
-                probatio.Required(
-                    CONF_SCAN_INTERVAL,
-                    default=str(
-                        round_interval(
-                            self.config_entry.options.get(
-                                CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                            )
-                        )
-                    ),
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[str(seconds) for seconds in SCAN_INTERVAL_CHOICES],
-                        translation_key=CONF_SCAN_INTERVAL,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                **extra,
-            }
-        )

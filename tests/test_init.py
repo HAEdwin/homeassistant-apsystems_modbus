@@ -14,7 +14,6 @@ from modbus_connection.mock import MockModbusConnection
 import pytest
 
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
@@ -34,7 +33,6 @@ from custom_components.apsystems_modbus.const import (
 from custom_components.apsystems_modbus.coordinator import (
     EcuCoordinator,
     new_address_issue_id,
-    round_interval,
     settle_time,
     until_next_poll,
 )
@@ -53,7 +51,7 @@ def assert_next_poll_after_a_round(
     coordinator: EcuCoordinator, interval: int | None = None
 ) -> None:
     """The next poll is planned just after an ECU round, within ``interval``."""
-    interval = interval or coordinator.interval
+    interval = interval or ROUND_PERIOD
     assert coordinator.update_interval is not None
     due = dt_util.utcnow() + coordinator.update_interval
     phase = (due.timestamp() - coordinator.settle) % interval
@@ -65,7 +63,7 @@ def assert_next_poll_after_a_round(
 async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_setup_and_first_poll(
@@ -99,7 +97,7 @@ async def test_setup_only_waits_for_one_read(
     assert mock_config_entry.runtime_data.data.online == 1
 
 
-async def test_silent_ecu_retries_setup(
+async def test_silent_ecu_does_not_hold_up_the_start(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
@@ -109,7 +107,14 @@ async def test_silent_ecu_retries_setup(
 
     await setup_entry(hass, mock_config_entry)
 
-    assert mock_config_entry.state is ConfigEntryState.SETUP_RETRY
+    # Loaded at once; the first poll in the background reports the silence.
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    assert mock_config_entry.runtime_data.last_update_success is False
+
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(None)
+    await mock_config_entry.runtime_data.async_refresh()
+    assert mock_config_entry.runtime_data.data.available == {1, 2}
 
 
 async def test_silent_first_inverter_does_not_block_setup(
@@ -123,13 +128,12 @@ async def test_silent_first_inverter_does_not_block_setup(
 
     assert mock_config_entry.state is ConfigEntryState.LOADED
     coordinator = mock_config_entry.runtime_data
-    assert coordinator.lead.unit_id == 2
     # Unit 1 holds the first cycle up; from then on it waits for unit 2.
     await coordinator.async_refresh()
     assert coordinator.data.available == {2}
 
 
-async def test_refused_ecu_retries_setup(
+async def test_refused_ecu_does_not_hold_up_the_start(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
@@ -138,19 +142,8 @@ async def test_refused_ecu_retries_setup(
 
     await setup_entry(hass, mock_config_entry)
 
-    assert mock_config_entry.state is ConfigEntryState.SETUP_RETRY
-
-
-async def test_unsupported_layout_is_a_setup_error(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    mock_ecu.for_unit(1).holding[40070] = 103
-
-    await setup_entry(hass, mock_config_entry)
-
-    assert mock_config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    assert mock_config_entry.runtime_data.last_update_success is False
 
 
 async def test_unload(
@@ -161,7 +154,7 @@ async def test_unload(
     await setup_entry(hass, mock_config_entry)
 
     assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert mock_config_entry.state is ConfigEntryState.NOT_LOADED
 
 
@@ -174,12 +167,10 @@ def four_inverter_entry(mock_ecu: MockModbusConnection) -> MockConfigEntry:
         inverters.append(
             {CONF_UNIT_ID: unit_id, CONF_SERIAL_NUMBER: serial, CONF_MODEL: "DS3"}
         )
-    # Every third round, so polling every round while slow stands out.
     return MockConfigEntry(
         domain="apsystems_modbus",
         unique_id="704000000001",
         data={"host": "192.0.2.10", "port": 502, CONF_INVERTERS: inverters},
-        options={CONF_SCAN_INTERVAL: 900},
     )
 
 
@@ -471,11 +462,52 @@ async def test_energy_today_is_complete_right_after_a_restart(
     # After a restart unit 2 does not answer yet; its counter of today counts.
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
     await hass.config_entries.async_reload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     coordinator = mock_config_entry.runtime_data
     assert coordinator.data.available == {1}
     assert coordinator.data.energy_today == pytest.approx(before)
+
+
+async def test_energy_today_drops_yesterday_of_an_unread_inverter(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    freezer.move_to("2026-10-13 18:00:00+00:00")
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.data.energy_today == pytest.approx(554.08 + 541.79, abs=0.01)
+
+    # Next morning unit 2 is not read yet; unit 1 started its new day.
+    freezer.move_to("2026-10-14 18:00:00+00:00")
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    set_float32(mock_ecu.for_unit(1), ENERGY_TODAY, 0.0)
+    await coordinator.async_refresh()
+    set_float32(mock_ecu.for_unit(1), ENERGY_TODAY, 50.0)
+    await coordinator.async_refresh()
+
+    # Yesterday's 541.79 Wh of unit 2 no longer counts as today.
+    assert coordinator.data.energy_today == pytest.approx(50.0)
+
+
+async def test_unchanged_totals_are_not_written_again(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    await coordinator.async_refresh()
+
+    # Nothing changed since the last poll, as at night: no write is planned.
+    with patch.object(coordinator.ledger._store, "async_delay_save") as save:
+        await coordinator.async_refresh()
+        save.assert_not_called()
+        set_float32(mock_ecu.for_unit(1), ENERGY_TODAY, 600.0)
+        await coordinator.async_refresh()
+        save.assert_called_once()
 
 
 async def test_an_older_value_does_not_move_the_last_change(
@@ -566,26 +598,29 @@ async def test_changed_address_is_held_back_and_reported(
     # Reconfiguring reloads the entry; with the addresses right it stays away.
     add_inverter(mock_ecu, 2, "703000000002")
     await hass.config_entries.async_reload(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert new_address_issue(hass, mock_config_entry) is None
     assert mock_config_entry.runtime_data.data.available == {1, 2}
 
 
-async def test_connection_lost_marks_update_failed(
+async def test_lost_connection_keeps_what_was_read(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
     coordinator = mock_config_entry.runtime_data
-    mock_ecu.for_unit(1).fail_requests(ModbusConnectionError("gone"))
+    mock_ecu.for_unit(2).fail_requests(ModbusConnectionError("gone"))
 
+    # Unit 1 was read before the connection broke: it still counts.
     await coordinator.async_refresh()
-    assert coordinator.last_update_success is False
-
-    mock_ecu.for_unit(1).fail_requests(None)
-    await coordinator.async_refresh()
+    assert coordinator.data.link_lost is True
+    assert coordinator.data.available == {1}
     assert coordinator.last_update_success is True
+
+    mock_ecu.for_unit(2).fail_requests(None)
+    await coordinator.async_refresh()
+    assert coordinator.data.available == {1, 2}
 
 
 async def test_write_lock_lets_write_go_between_inverters(
@@ -647,17 +682,19 @@ async def test_daily_total_keeps_counting_without_one_inverter(
     assert coordinator.data.energy_today > before
 
 
-async def test_first_poll_reads_identity_only_once(
+async def test_start_reads_no_identity(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
 
-    # Unit 2 only gets the two polling reads; the layout is checked on unit 1.
-    spans = sorted((e.address, e.count) for e in mock_ecu.for_unit(2).read_events)
-    assert spans == [(40052, 60), (40124, 114)]
-    assert any(e.address == 40000 for e in mock_ecu.for_unit(1).read_events)
+    # Only the two polling reads: the layout was checked when it was added.
+    for unit_id in (1, 2):
+        spans = sorted(
+            (e.address, e.count) for e in mock_ecu.for_unit(unit_id).read_events
+        )
+        assert spans == [(40052, 60), (40124, 114)]
 
 
 async def test_impossible_power_reading_is_not_counted(
@@ -684,7 +721,7 @@ async def test_totals_reach_storage(
 
     # Written shortly after a poll ...
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass_storage[key]["data"]["reported"] == pytest.approx(1095.87, abs=0.01)
 
     # ... and right away when the integration unloads.
@@ -725,14 +762,6 @@ def test_more_inverters_wait_longer_but_before_the_next_round(
     assert settle_time(inverters) == seconds
 
 
-@pytest.mark.parametrize(
-    ("stored", "seconds"),
-    [(60, 300), (120, 300), (300, 300), (600, 600), (900, 900), (1800, 900)],
-)
-def test_old_poll_intervals_become_whole_rounds(stored: int, seconds: int) -> None:
-    assert round_interval(stored) == seconds
-
-
 async def test_first_poll_at_once_then_after_each_round(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
@@ -748,85 +777,16 @@ async def test_first_poll_at_once_then_after_each_round(
     assert coordinator.update_interval == timedelta(minutes=4, seconds=13)
 
 
-async def test_polls_before_the_ecu_refreshed_are_counted(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    await setup_entry(hass, mock_config_entry)
-    coordinator = mock_config_entry.runtime_data
-    # The first poll after a start has nothing to compare with.
-    assert coordinator.daytime_polls == 0
-
-    await coordinator.async_refresh()
-    assert coordinator.daytime_polls == 1
-    assert coordinator.polls_without_news == 1
-    assert coordinator.late_inverters == {}
-
-    # Unit 1 has new values, unit 2 not yet.
-    set_float32(mock_ecu.for_unit(1), ENERGY_TODAY, 600.0)
-    await coordinator.async_refresh()
-    assert coordinator.daytime_polls == 2
-    assert coordinator.polls_without_news == 1
-    assert coordinator.late_inverters == {2: 1}
-
-
-async def test_night_polls_are_not_counted(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    for unit_id in (1, 2):
-        set_float32(mock_ecu.for_unit(unit_id), 40144, 0.0)
-        set_float32(mock_ecu.for_unit(unit_id), 40146, 0.0)
-    await setup_entry(hass, mock_config_entry)
-    coordinator = mock_config_entry.runtime_data
-
-    await coordinator.async_refresh()
-    assert coordinator.daytime_polls == 0
-    assert coordinator.polls_without_news == 0
-
-
-async def test_one_inverter_left_at_1_w_at_night_is_not_daytime(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    # At night the ECU often keeps one inverter at 1 W, but with 0 Hz.
-    for unit_id in (1, 2):
-        set_float32(mock_ecu.for_unit(unit_id), 40144, 0.0)
-        set_float32(mock_ecu.for_unit(unit_id), 40146, 0.0)
-    set_float32(mock_ecu.for_unit(2), 40144, 1.0)
-    await setup_entry(hass, mock_config_entry)
-    coordinator = mock_config_entry.runtime_data
-    assert coordinator.data.online == 1
-
-    await coordinator.async_refresh()
-    assert coordinator.daytime_polls == 0
-    assert coordinator.polls_without_news == 0
-
-
-async def test_a_long_interval_still_retries_every_round(
+async def test_an_old_poll_interval_option_is_ignored(
     hass: HomeAssistant, mock_ecu: MockModbusConnection
 ) -> None:
+    # Versions before 0.4.7 could poll every second or third round.
     entry = MockConfigEntry(
         domain="apsystems_modbus",
         title="APsystems ECU",
         unique_id="704000000001",
         data={"host": "192.0.2.10", "port": 502, CONF_INVERTERS: INVERTERS},
-        options={CONF_SCAN_INTERVAL: 900},
+        options={"scan_interval": 900},
     )
     await setup_entry(hass, entry)
-    coordinator = entry.runtime_data
-    assert_next_poll_after_a_round(coordinator, 900)
-
-    for unit_id in (1, 2):
-        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
-    await coordinator.async_refresh()
-    assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
-
-    # Answering again: back to the chosen interval.
-    for unit_id in (1, 2):
-        mock_ecu.for_unit(unit_id).fail_requests(None)
-    await coordinator.async_refresh()
-    assert_next_poll_after_a_round(coordinator, 900)
+    assert_next_poll_after_a_round(entry.runtime_data)

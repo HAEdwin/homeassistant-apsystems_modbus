@@ -10,32 +10,37 @@ from homeassistant.components import persistent_notification
 from homeassistant.components.modbus import async_get_temporary_unit, async_get_unit
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import (
-    ConfigEntryError,
-    ConfigEntryNotReady,
-    HomeAssistantError,
-)
+from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.translation import async_get_translations
 
 from .const import CONF_INVERTERS, CONF_SERIAL_NUMBER, CONF_UNIT_ID, DOMAIN
 from .coordinator import ApsystemsConfigEntry, EcuCoordinator, new_address_issue_id
-from .ecu import Inverter, UnsupportedLayoutError
+from .ecu import Inverter
 from .entity import ecu_device_info, ecu_identifier
 from .lifetime import EnergyLedger
-from .power_limit import NO_LIMIT, effective_limit, issue_id_for, store_for
+from .power_limit import (
+    NO_LIMIT,
+    effective_limit,
+    issue_id_for,
+    store_for,
+    stored_choice,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SENSOR]
-LAYOUT_CHECK_ATTEMPTS = 2
+RELEASE_ATTEMPTS = 2
+"""Inverters tried on removal, so one silent inverter does not block it."""
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -> bool:
-    """Connect to the ECU and start polling in the background.
+    """Set up polling without waiting for the ECU.
 
-    Home Assistant only waits for the layout check here, so a slow or silent
-    ECU does not delay startup. The first full poll runs as a background task.
+    The register layout was checked when the ECU was added and does not
+    change. Asking for it again at every start only made a slow ECU hold up
+    or fail the start. The first poll runs in the background and shows any
+    problem as unavailable entities with a message in the log.
     """
     params = ModbusTcpParams(host=entry.data[CONF_HOST], port=entry.data[CONF_PORT])
     inverters: dict[int, Inverter] = {}
@@ -50,7 +55,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
             translation_key="link_in_use",
             translation_placeholders={"host": entry.data[CONF_HOST]},
         ) from err
-    lead = await _async_check_layout(entry, inverters)
+    # The ECU-wide values such as the power limit are read through one unit.
+    lead = inverters[min(inverters)]
 
     # The stored totals belong to the ECU, not to this entry, so they survive
     # removing and re-adding the integration.
@@ -74,43 +80,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
         hass, coordinator.async_refresh(), f"{DOMAIN} first poll"
     )
     return True
-
-
-async def _async_check_layout(
-    entry: ApsystemsConfigEntry, inverters: dict[int, Inverter]
-) -> Inverter:
-    """Check the register layout on the first inverter that answers.
-
-    All units of one ECU share the layout. A second inverter is tried when the
-    first one is silent, so one broken inverter does not block the setup.
-    """
-    for inverter in sorted(inverters.values(), key=lambda inv: inv.unit_id)[
-        :LAYOUT_CHECK_ATTEMPTS
-    ]:
-        inverter.checks_layout = True
-        try:
-            await inverter.async_ensure_setup()
-        except ModbusTimeoutError:
-            inverter.checks_layout = False
-            continue
-        except UnsupportedLayoutError as err:
-            raise ConfigEntryError(
-                translation_domain=DOMAIN,
-                translation_key="unsupported_layout",
-                translation_placeholders={"details": str(err)},
-            ) from err
-        except ModbusError as err:
-            raise ConfigEntryNotReady(
-                translation_domain=DOMAIN,
-                translation_key="cannot_connect",
-                translation_placeholders={"host": entry.data[CONF_HOST]},
-            ) from err
-        return inverter
-    raise ConfigEntryNotReady(
-        translation_domain=DOMAIN,
-        translation_key="cannot_connect",
-        translation_placeholders={"host": entry.data[CONF_HOST]},
-    )
 
 
 def _remove_stale_devices(
@@ -137,19 +106,28 @@ async def async_unload_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -> None:
-    """Release a power limit that is still set, so the inverters are not left limited.
+    """Release a power limit this integration set, so the inverters are not left limited.
 
-    If the limit could not be checked or released, the user is told, because
-    nothing else would release it any more. The stored choice goes too, so
-    adding the ECU again starts without a limit.
+    A limit set by someone else, such as the installer, is left alone, and
+    without a limit of its own the ECU is not contacted at all. If the limit
+    could not be checked or released, the user is told, because nothing else
+    would release it any more. The stored choice goes too, so adding the ECU
+    again starts without a limit.
     """
-    await store_for(hass, entry.entry_id).async_remove()
+    store = store_for(hass, entry.entry_id)
+    desired = stored_choice(await store.async_load())
+    await store.async_remove()
     ir.async_delete_issue(hass, DOMAIN, issue_id_for(entry.entry_id))
     ir.async_delete_issue(hass, DOMAIN, new_address_issue_id(entry.entry_id))
+    if desired is None or desired >= NO_LIMIT:
+        return
     try:
         released = await _async_release_limit(hass, entry)
     except (ModbusError, HomeAssistantError) as err:
-        _LOGGER.warning("Could not release the power limit on removal: %s", err)
+        _LOGGER.warning(
+            "Could not release the power limit on removal (%s)", type(err).__name__
+        )
+        _LOGGER.debug("Releasing the power limit failed: %s", err)
         released = False
     if released:
         return
@@ -183,7 +161,7 @@ async def _async_release_limit(
     """
     params = ModbusTcpParams(host=entry.data[CONF_HOST], port=entry.data[CONF_PORT])
     unit_ids = sorted(item[CONF_UNIT_ID] for item in entry.data[CONF_INVERTERS])
-    for unit_id in unit_ids[:LAYOUT_CHECK_ATTEMPTS]:
+    for unit_id in unit_ids[:RELEASE_ATTEMPTS]:
         async with async_get_temporary_unit(hass, params, unit_id) as unit:
             inverter = Inverter(unit, unit_id, checks_layout=False)
             try:

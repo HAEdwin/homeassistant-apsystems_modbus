@@ -51,16 +51,7 @@ async def async_get_config_entry_diagnostics(
             if data and data.last_change
             else None,
         },
-        "polling": {
-            "interval_s": coordinator.interval,
-            "settle_s": coordinator.settle,
-            "daytime_polls": coordinator.daytime_polls,
-            "polls_without_news": coordinator.polls_without_news,
-            "late_inverters": {
-                str(unit_id): count
-                for unit_id, count in sorted(coordinator.late_inverters.items())
-            },
-        },
+        "polling": {"settle_s": coordinator.settle},
         "power_limit": {
             "control_unit": coordinator.power_limit.control.unit_id,
             "desired": coordinator.power_limit.desired,
@@ -74,12 +65,9 @@ async def async_get_config_entry_diagnostics(
             "next_refresh": coordinator.power_limit.next_refresh.isoformat()
             if coordinator.power_limit.next_refresh
             else None,
-            "refresh_count": coordinator.power_limit.refresh_count,
+            "rewrites": coordinator.power_limit.rewrites,
             "installation_power_kw": coordinator.power_limit.installation_power,
             "overshoot_refreshes": coordinator.power_limit.overshoot_refreshes,
-            "last_refresh": coordinator.power_limit.last_refresh.isoformat()
-            if coordinator.power_limit.last_refresh
-            else None,
         },
         "lifetime": {
             "lifetime_energy_wh": coordinator.ledger.lifetime,

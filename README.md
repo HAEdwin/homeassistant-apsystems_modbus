@@ -73,19 +73,12 @@ Devices & services*, or add it yourself:
 
 [![Open your Home Assistant instance and start setting up APsystems Modbus.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=apsystems_modbus)
 
-| Field | Meaning |
-|---|---|
-| Host | IP address of the ECU |
-| Port | 502 |
-| Inverter addresses | The Modbus addresses from EMA Manager, like `1-8` or `1, 2, 5`. Leave empty to find them automatically. |
-| Installation power (optional) | Output of all inverters together in kW, for example 8 × 0.73 = 5.8 for DS3-L or 8 × 0.88 = 7.0 for DS3. Leave empty to set the limit in percent only. |
-| Lifetime energy (optional) | Your total from the EMA app in kWh. It counts on from there. Leave empty to start at 0. |
+The dialog explains every field. Leave the inverter addresses empty to find
+the inverters automatically.
 
-Under *Configure* you can read every round of the ECU (5 minutes, the
-default) or every second or third round, enter the installation power and
-correct the lifetime energy and lifetime peak power. A correction shows up
-once as production in that hour. Fix that under
-*Settings → Tools → Statistics*.
+Under *Configure* you can enter the installation power, correct the lifetime
+energy and reset the peak power. A correction shows up once as production in
+that hour. Fix that under *Settings → Tools → Statistics*.
 
 ## Energy dashboard
 
@@ -99,24 +92,14 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
 
 - Inverters follow a change within a few minutes, in tests up to about 15.
 - At 0 each inverter still delivers about 20 to 30 W.
-- If a change does not reach the ECU, you get a message and the integration
-  tries again by itself.
-- An inverter sometimes misses a change, and a restart of the ECU clears the
-  limit. So the integration sends the limit again 15 and 75 minutes after a
-  change, and when it notices that the ECU was off. For a few minutes it
-  uses one percent more or less, otherwise the ECU does not pass it on.
-- The limit stays when Home Assistant stops, and the integration picks it up
-  again when it starts.
+- The integration keeps the limit in place by itself. After a failed change,
+  a restart of the ECU or a restart of Home Assistant it sends the limit
+  again.
 - With the installation power entered, a second control sets the same limit
-  in kW. Below about 10 % this is an estimate.
-- The integration then also notices an inverter that delivers clearly more
-  than the limit allows, for example after a restart of the ECU it did not
-  see, and sends the limit again. If that does not help, a notice under
-  *Settings → Repairs* asks you to check the installation power. This margin
-  was measured on DS3-L inverters.
+  in kW. If an inverter then delivers clearly more than the limit allows, a
+  notice under *Settings → Repairs* asks you to check the installation power.
 - If an inverter stays limited, set the limit to 100. If that does not help,
-  switch the ECU off for a minute. In our tests this cleared the limit on all
-  inverters.
+  switch the ECU off for a minute.
 
 Example: no export at negative feed-in prices. Replace the entity IDs with
 yours.
