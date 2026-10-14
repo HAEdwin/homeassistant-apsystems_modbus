@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+import itertools
 from typing import Any
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ from custom_components.apsystems_modbus.const import (
     CONF_MODEL,
     CONF_SERIAL_NUMBER,
     CONF_UNIT_ID,
+    POLL_BUDGET,
     ROUND_PERIOD,
 )
 from custom_components.apsystems_modbus.coordinator import (
@@ -122,6 +124,8 @@ async def test_silent_first_inverter_does_not_block_setup(
     assert mock_config_entry.state is ConfigEntryState.LOADED
     coordinator = mock_config_entry.runtime_data
     assert coordinator.lead.unit_id == 2
+    # Unit 1 holds the first cycle up; from then on it waits for unit 2.
+    await coordinator.async_refresh()
     assert coordinator.data.available == {2}
 
 
@@ -161,59 +165,298 @@ async def test_unload(
     assert mock_config_entry.state is ConfigEntryState.NOT_LOADED
 
 
-async def test_timeout_budget_skips_rest_and_backs_off(
-    hass: HomeAssistant, mock_ecu: MockModbusConnection
-) -> None:
-    add_inverter(mock_ecu, 3, "703000000003")
-    add_inverter(mock_ecu, 4, "703000000004")
-    entry = MockConfigEntry(
+def four_inverter_entry(mock_ecu: MockModbusConnection) -> MockConfigEntry:
+    """An entry for the mock ECU with inverters on units 1 to 4."""
+    inverters = list(INVERTERS)
+    for unit_id in (3, 4):
+        serial = f"70300000000{unit_id}"
+        add_inverter(mock_ecu, unit_id, serial)
+        inverters.append(
+            {CONF_UNIT_ID: unit_id, CONF_SERIAL_NUMBER: serial, CONF_MODEL: "DS3"}
+        )
+    # Every third round, so polling every round while slow stands out.
+    return MockConfigEntry(
         domain="apsystems_modbus",
         unique_id="704000000001",
-        data={
-            "host": "192.0.2.10",
-            "port": 502,
-            CONF_INVERTERS: [
-                *INVERTERS,
-                {
-                    CONF_UNIT_ID: 3,
-                    CONF_SERIAL_NUMBER: "703000000003",
-                    CONF_MODEL: "DS3",
-                },
-                {
-                    CONF_UNIT_ID: 4,
-                    CONF_SERIAL_NUMBER: "703000000004",
-                    CONF_MODEL: "DS3",
-                },
-            ],
-        },
+        data={"host": "192.0.2.10", "port": 502, CONF_INVERTERS: inverters},
+        options={CONF_SCAN_INTERVAL: 900},
     )
+
+
+def record_reads(mock_ecu: MockModbusConnection) -> list[tuple[int, int]]:
+    """Record (unit id, address) of every read of units 1 to 4, in order."""
+    reads: list[tuple[int, int]] = []
+    for unit_id in range(1, 5):
+        unit = mock_ecu.for_unit(unit_id)
+        original = unit.read_holding_registers
+
+        async def read(
+            address: int, count: int, *, _unit: int = unit_id, _read: Any = original
+        ) -> list[int]:
+            reads.append((_unit, address))
+            return await _read(address, count)
+
+        unit.read_holding_registers = read  # type: ignore[method-assign]
+    return reads
+
+
+async def test_first_timeout_ends_the_cycle_and_backs_off(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
     await setup_entry(hass, entry)
     coordinator = entry.runtime_data
     assert coordinator.data.available == {1, 2, 3, 4}
 
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
     mock_ecu.for_unit(3).fail_requests(ModbusTimeoutError())
-    mock_ecu.for_unit(4).read_events.clear()
+    for unit_id in (3, 4):
+        mock_ecu.for_unit(unit_id).read_events.clear()
     await coordinator.async_refresh()
 
-    # Units 2 and 3 timed out, so unit 4 was not even asked this cycle.
+    # Unit 2 kept the ECU busy, so units 3 and 4 were not even asked.
     assert coordinator.data.available == {1}
+    assert coordinator.data.cut_short is True
+    assert mock_ecu.for_unit(3).read_events == []
     assert mock_ecu.for_unit(4).read_events == []
     # A failed cycle is retried just after the next round.
     assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
     # The daily total keeps its last complete value instead of dipping.
     assert coordinator.data.energy_today == pytest.approx(554.08 + 3 * 541.79, abs=0.05)
 
-    # Still silent: still every round, no longer waits.
-    for _ in range(3):
+    # Units 2 and 3 stay silent. Once both are known, they are read last,
+    # one per poll, so units 1 and 4 come through in full and the poll
+    # counts as complete again.
+    for _ in range(2):
         await coordinator.async_refresh()
-        assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
+    reads = record_reads(mock_ecu)
+    await coordinator.async_refresh()
+    assert reads == [(1, 40124), (1, 40052), (4, 40124), (4, 40052), (3, 40124)]
+    assert coordinator.data.available == {1, 4}
+    assert coordinator.data.cut_short is False
 
     mock_ecu.for_unit(2).fail_requests(None)
     mock_ecu.for_unit(3).fail_requests(None)
     await coordinator.async_refresh()
     assert coordinator.data.available == {1, 2, 3, 4}
     assert_next_poll_after_a_round(coordinator)
+
+
+async def test_a_healthy_ecu_gets_the_same_requests_every_cycle(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    reads = record_reads(mock_ecu)
+
+    plain = [
+        (unit_id, address) for unit_id in (1, 2, 3, 4) for address in (40124, 40052)
+    ]
+    for _ in range(3):
+        reads.clear()
+        await coordinator.async_refresh()
+        assert reads == plain
+    for unit_id in (1, 2, 3, 4):
+        assert mock_ecu.for_unit(unit_id).required_timeout == 60
+
+    # After a hiccup the order is plain again as soon as a cycle completes.
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    mock_ecu.for_unit(2).fail_requests(None)
+    for _ in range(2):
+        await coordinator.async_refresh()
+    reads.clear()
+    await coordinator.async_refresh()
+    assert reads == plain
+
+
+async def test_the_poll_budget_ends_a_slow_cycle(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    reads = record_reads(mock_ecu)
+
+    # The clock read at the start, then before units 1, 2 and 3.
+    clock = iter([0.0, 0.0, 70.0, POLL_BUDGET])
+    with patch(
+        "custom_components.apsystems_modbus.coordinator.monotonic",
+        lambda: next(clock),
+    ):
+        await coordinator.async_refresh()
+
+    assert coordinator.data.available == {1, 2}
+    assert coordinator.data.cut_short is True
+    assert {unit_id for unit_id, _ in reads} == {1, 2}
+    assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
+
+
+async def test_a_late_status_block_ends_the_cycle(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    reads = record_reads(mock_ecu)
+
+    mock_ecu.for_unit(2).fail_read(40052, ModbusTimeoutError())
+    await coordinator.async_refresh()
+
+    # The measurements of unit 2 came in and count; units 3 and 4 wait.
+    assert coordinator.data.available == {1, 2}
+    assert coordinator.data.cut_short is True
+    assert {unit_id for unit_id, _ in reads} == {1, 2}
+
+
+async def test_a_struggling_ecu_reads_measurements_only_and_turns_move_on(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    reads = record_reads(mock_ecu)
+
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    assert reads == [(1, 40124), (1, 40052), (2, 40124)]
+
+    # Units 3 and 4 were not reached, so they go first; unit 2 goes last.
+    # The status block waits while the ECU struggles.
+    reads.clear()
+    await coordinator.async_refresh()
+    assert reads == [(3, 40124), (4, 40124), (1, 40124), (2, 40124)]
+    assert coordinator.data.available == {1, 3, 4}
+    assert coordinator.data.cut_short is False
+
+    # Unit 2 held nothing up at the end, so that cycle counted as complete:
+    # the plain order and the status block are back, with unit 2 last.
+    reads.clear()
+    await coordinator.async_refresh()
+    assert reads == [
+        (1, 40124),
+        (1, 40052),
+        (3, 40124),
+        (3, 40052),
+        (4, 40124),
+        (4, 40052),
+        (2, 40124),
+    ]
+
+
+def one_inverter_per_poll() -> Any:
+    """Patch the clock so that each poll has time for one inverter only."""
+    ticks = itertools.count(0, POLL_BUDGET * 2 / 3)
+    return patch(
+        "custom_components.apsystems_modbus.coordinator.monotonic",
+        lambda: next(ticks),
+    )
+
+
+async def test_status_is_read_every_quarter_hour_while_slow(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    reads = record_reads(mock_ecu)
+
+    with one_inverter_per_poll():
+        await coordinator.async_refresh()
+        assert reads == [(1, 40124), (1, 40052)]
+        assert coordinator.data.cut_short is True
+
+        # Slow now: the status of unit 2 is recent enough to wait.
+        reads.clear()
+        await coordinator.async_refresh()
+        assert reads == [(2, 40124)]
+
+        # That of unit 3 is a quarter of an hour old, so it is read along.
+        reads.clear()
+        freezer.tick(timedelta(minutes=16))
+        await coordinator.async_refresh()
+        assert reads == [(3, 40124), (3, 40052)]
+
+
+async def test_a_silent_inverter_stays_last_when_polls_run_out_of_time(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    reads = record_reads(mock_ecu)
+
+    # Unit 2 went unanswered; units that waited longer never pass it to the
+    # front, so it does not cost a whole poll.
+    with one_inverter_per_poll():
+        for expected in (3, 4, 1):
+            reads.clear()
+            await coordinator.async_refresh()
+            assert [unit_id for unit_id, _ in reads] == [expected]
+
+
+async def test_every_silent_inverter_gets_tried_again(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> None:
+    entry = four_inverter_entry(mock_ecu)
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+
+    # Unit 3 misses once, then the lead stays silent for good.
+    mock_ecu.for_unit(3).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    mock_ecu.for_unit(3).fail_requests(None)
+    mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
+    seen: set[int] = set()
+    for _ in range(4):
+        await coordinator.async_refresh()
+        seen |= coordinator.data.available
+
+    # The silent lead does not keep unit 3 from its turn.
+    assert seen == {2, 3, 4}
+
+
+async def test_peak_comes_from_one_poll_only(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    set_float32(mock_ecu.for_unit(1), 40144, 900.0)
+    await coordinator.async_refresh()
+
+    # The total counts the 506 W of unit 2 from the poll before; the peak
+    # only what this poll read.
+    assert coordinator.data.power == pytest.approx(1406.0)
+    assert coordinator.ledger.peak_power == pytest.approx(900.0)
+
+
+async def test_an_older_value_does_not_move_the_last_change(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    before = coordinator.data.last_change
+
+    # Unit 2 is missed and its last values are counted again; unit 1 has
+    # nothing new. That is no new data.
+    freezer.tick(timedelta(minutes=5))
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+
+    assert coordinator.data.recent == {1, 2}
+    assert coordinator.data.last_change == before
 
 
 def new_address_issue(
@@ -336,10 +579,13 @@ async def test_interval_recovers_while_one_inverter_stays_silent(
     await coordinator.async_refresh()
     assert_next_poll_after_a_round(coordinator, ROUND_PERIOD)
 
-    # The ECU is back, but unit 2 stays broken: normal polling resumes anyway.
+    # The ECU is back, but unit 2 stays broken: normal polling resumes as
+    # soon as unit 2 is last in line and holds nothing up any more.
     mock_ecu.for_unit(1).fail_requests(None)
     await coordinator.async_refresh()
+    await coordinator.async_refresh()
     assert coordinator.data.available == {1}
+    assert coordinator.data.cut_short is False
     assert_next_poll_after_a_round(coordinator)
 
 

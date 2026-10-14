@@ -348,8 +348,12 @@ async def test_pending_is_retried_while_one_inverter_stays_silent(
     unit.fail_write(EXPORT_LIMIT_ADDRESS, None)
     writes = record_writes(unit)
 
-    # A broken inverter that never answers does not hold the retry up.
+    # A broken inverter that never answers holds the retry up for one poll:
+    # right after it the ECU is still busy. From then on it is read last,
+    # after the retry.
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    await coordinator.async_refresh()
+    assert writes == []
     await coordinator.async_refresh()
 
     assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
@@ -648,7 +652,7 @@ async def test_stays_available_while_the_ecu_is_silent(
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
     await coordinator.async_refresh()
-    assert coordinator.last_update_success is False
+    assert coordinator.data.available == set()
     assert state_of(hass) == "100"
 
     # Setting is attempted and reports the failure instead of being skipped.
@@ -769,7 +773,7 @@ async def test_grid_connection_is_never_written(
     # The autouse fixture fails this test if 40188 was even attempted.
 
 
-async def test_restore_waits_for_a_poll_not_cut_short(
+async def test_restore_waits_until_the_ecu_is_not_busy(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
 ) -> None:
@@ -779,19 +783,20 @@ async def test_restore_waits_for_a_poll_not_cut_short(
     unit = mock_ecu.for_unit(1)
     writes = record_writes(unit)
 
-    # The ECU lost the limit while it struggles: no write yet.
+    # The ECU lost the limit while it struggles. The first poll ends with
+    # unit 2 unanswered and the second with unit 3 before unit 1 is read, so
+    # nothing is written while the ECU may still be busy.
     set_ecu(unit, 100, 48)
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
     mock_ecu.for_unit(3).fail_requests(ModbusTimeoutError())
-    await coordinator.async_refresh()
-    await coordinator.async_refresh()
+    for _ in range(2):
+        await coordinator.async_refresh()
     assert writes == []
-    assert state_of(hass) == "100"
 
-    # The next poll that is not cut short restores it.
-    mock_ecu.for_unit(2).fail_requests(None)
-    mock_ecu.for_unit(3).fail_requests(None)
+    # Units 2 and 3 are read last from now on, after the limit: restored,
+    # although they stay silent.
     await coordinator.async_refresh()
+    assert state_of(hass) == "30"
     assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
 
 
@@ -809,7 +814,7 @@ async def test_whole_ecu_silent_changes_nothing(
     await coordinator.async_refresh()
     await coordinator.async_refresh()
 
-    assert coordinator.last_update_success is False
+    assert coordinator.data.available == set()
     assert writes == []
     assert coordinator.power_limit.deviations == 0
     assert state_of(hass) == "30"
@@ -1037,7 +1042,7 @@ async def test_no_refresh_while_an_inverter_is_offline(
     assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
 
 
-async def test_finishing_a_refresh_is_not_held_up_by_a_cut_short_poll(
+async def test_finishing_a_refresh_waits_until_the_ecu_is_not_busy(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     freezer: FrozenDateTimeFactory,
@@ -1049,12 +1054,16 @@ async def test_finishing_a_refresh_is_not_held_up_by_a_cut_short_poll(
     freezer.tick(REFRESH_DELAY)
     await coordinator.async_refresh()
 
+    # Not right after unit 2 went unanswered, nor in the poll where unit 3
+    # does; then units 2 and 3 come after the refresh.
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
     mock_ecu.for_unit(3).fail_requests(ModbusTimeoutError())
     freezer.tick(STEP_HOLD)
+    for _ in range(2):
+        await coordinator.async_refresh()
+        assert writes[2:] == []
     await coordinator.async_refresh()
 
-    assert coordinator.data.cut_short is True
     assert writes[2:] == [
         (EXPORT_LIMIT_ADDRESS, 300),
         (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
@@ -1102,7 +1111,7 @@ async def test_silent_ecu_below_100_refreshes_once_it_answers(
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
     await coordinator.async_refresh()
-    assert coordinator.last_update_success is False
+    assert coordinator.data.available == set()
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(None)
 
@@ -1152,9 +1161,10 @@ async def test_lost_connection_is_reopened_in_the_same_poll(
     await coordinator.async_refresh()
 
     # Everything stays available, and below 100 the limit is sent again.
+    # Unit 1 is read block by block: the lost one again, then the status.
     assert coordinator.last_update_success is True
     assert coordinator.data.available == {1, 2}
-    assert calls == 2
+    assert calls == 3
     assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
 
 

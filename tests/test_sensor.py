@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
+from freezegun.api import FrozenDateTimeFactory
 from modbus_connection import ModbusTimeoutError
 from modbus_connection.mock import MockModbusConnection
 import pytest
@@ -134,11 +137,28 @@ async def test_missing_inverter_goes_unavailable_totals_stay(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
     coordinator = mock_config_entry.runtime_data
+    peak = coordinator.ledger.peak_power
 
+    # Missed once: the last values still count, also in the totals.
     mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    set_float32(mock_ecu.for_unit(1), 40144, 300.0)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.inverter_703000000002_power").state == "506.0"
+    assert hass.states.get("sensor.inverter_704000000001_power").state == "300.0"
+    assert float(hass.states.get("sensor.apsystems_ecu_power").state) == 806.0
+    assert hass.states.get("sensor.apsystems_ecu_inverters_online").state == "2"
+    # Values of two different moments never make a new peak.
+    assert coordinator.ledger.peak_power == peak
+
+    # A quarter of an hour later its values no longer count.
+    set_float32(mock_ecu.for_unit(1), 40144, 204.0)
+    freezer.tick(timedelta(minutes=16))
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 
@@ -206,13 +226,22 @@ async def test_lifetime_stays_available_while_ecu_is_unreachable(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
-    await mock_config_entry.runtime_data.async_refresh()
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.last_update_success is True
+    assert hass.states.get("sensor.apsystems_ecu_power").state == "710.0"
+
+    freezer.tick(timedelta(minutes=16))
+    await coordinator.async_refresh()
     await hass.async_block_till_done()
 
+    assert coordinator.last_update_success is False
     assert hass.states.get("sensor.apsystems_ecu_power").state == STATE_UNAVAILABLE
     lifetime = hass.states.get("sensor.apsystems_ecu_lifetime_energy")
     assert float(lifetime.state) == pytest.approx(1.096, abs=0.001)

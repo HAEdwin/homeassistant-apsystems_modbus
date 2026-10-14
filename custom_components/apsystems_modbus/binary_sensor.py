@@ -67,10 +67,10 @@ class GridConnectionSensor(EcuEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        """Available while the inverter the flag is read from answered."""
+        """Available while the flag of the inverter it is read from is recent."""
         return (
             super().available
-            and self.coordinator.lead.unit_id in self.coordinator.data.available
+            and self.coordinator.lead.unit_id in self.coordinator.data.recent
         )
 
     @property

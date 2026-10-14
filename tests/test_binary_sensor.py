@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
+from freezegun.api import FrozenDateTimeFactory
 from modbus_connection import ModbusTimeoutError
 from modbus_connection.mock import MockModbusConnection
 
@@ -41,6 +44,7 @@ async def test_grid_connection_unavailable_without_lead_inverter(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
@@ -54,7 +58,14 @@ async def test_grid_connection_unavailable_without_lead_inverter(
     entity_id = "binary_sensor.apsystems_ecu_inverters_enabled"
     assert hass.states.get(entity_id).state == STATE_ON
 
+    # A missed cycle keeps the last flag; a quarter of an hour without does not.
+    coordinator = mock_config_entry.runtime_data
     mock_ecu.for_unit(1).fail_requests(ModbusTimeoutError())
-    await mock_config_entry.runtime_data.async_refresh()
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == STATE_ON
+
+    freezer.tick(timedelta(minutes=16))
+    await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert hass.states.get(entity_id).state == STATE_UNAVAILABLE

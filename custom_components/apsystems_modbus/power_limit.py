@@ -35,9 +35,9 @@ only the last one partly shows, as a failed poll. So:
 
 Lock order: ``PowerLimit._lock`` first, then the coordinator's ``write_lock``
 for each register write. The coordinator holds ``write_lock`` only while it
-reads one inverter and releases it in between, and ``async_after_poll`` runs
-after that loop without ``write_lock``. Calling it from inside the loop would
-deadlock.
+reads one block and releases it in between, and calls ``async_after_poll``
+between two reads without ``write_lock``. Calling it while holding
+``write_lock`` would deadlock.
 """
 
 from __future__ import annotations
@@ -325,8 +325,9 @@ class PowerLimit:
     async def async_after_poll(self, data: EcuData) -> None:
         """Update the shown value and make the ECU follow the chosen one.
 
-        Called by the coordinator after every successful poll, outside its
-        ``write_lock``.
+        Called by the coordinator once per successful poll, outside its
+        ``write_lock``: after the reads, or before the inverters that went
+        unanswered last time. Only this poll's reads count.
         """
         if self.control.unit_id not in data.available:
             return
@@ -341,18 +342,20 @@ class PowerLimit:
             return
         now = dt_util.utcnow()
 
+        # A write right after an unanswered request would queue up behind it.
+        # That inverter is read after this step from then on, so writing
+        # waits for one poll at most.
+        busy = data.ended_in_timeout
         if (written := self._refresh.step_written) is not None:
             # A refresh is under way and the ECU reports its in-between value.
             # Finishing only needs the ECU to answer, so it is not held up by
             # silent inverters.
-            if now - written >= STEP_HOLD:
+            if now - written >= STEP_HOLD and not busy:
                 await self._async_finish_refresh(now)
             return
 
         self._follow(reported)
-        # Writing waits for a poll that was not cut short; one inverter that
-        # stays silent (a broken one, say) does not hold it up.
-        if not data.cut_short:
+        if not busy:
             await self._async_keep_aligned(data, reported, now)
 
     def _follow(self, reported: int) -> None:
@@ -406,8 +409,11 @@ class PowerLimit:
             return
         # In the morning the weakest inverters wake up last. An inverter that
         # stays dark all day (a broken panel) must not hold the others up.
-        if data.online == len(data.available) or (
-            data.online > 0 and now >= refresh_due + REFRESH_REPEAT
+        # Judged on this cycle's reads only, never on older values.
+        inverters = self._coordinator.inverters
+        online = sum(inverters[unit].measurements.is_online for unit in data.available)
+        if online == len(data.available) or (
+            online > 0 and now >= refresh_due + REFRESH_REPEAT
         ):
             await self._async_start_refresh(now)
 

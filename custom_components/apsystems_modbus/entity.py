@@ -94,6 +94,10 @@ class InverterEntity(CoordinatorEntity[EcuCoordinator]):
 
     @property
     def available(self) -> bool:
-        """Available while this inverter answered in the last cycle."""
+        """Available while the last values of this inverter are recent.
+
+        A slow ECU may not reach every inverter each cycle; its values from an
+        earlier cycle stay shown for ``VALUE_MAX_AGE``.
+        """
         data = self.coordinator.data
-        return super().available and data is not None and self.unit_id in data.available
+        return super().available and data is not None and self.unit_id in data.recent

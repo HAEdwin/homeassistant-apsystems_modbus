@@ -42,6 +42,8 @@ async def async_get_config_entry_diagnostics(
             "last_update_success": coordinator.last_update_success,
             "update_interval": str(coordinator.update_interval),
             "available": sorted(data.available) if data else None,
+            "recent": sorted(data.recent) if data else None,
+            "value_age_seconds": coordinator.value_ages(),
             "power": data.power if data else None,
             "energy_today": data.energy_today if data else None,
             "online": data.online if data else None,

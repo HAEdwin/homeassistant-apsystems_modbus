@@ -41,8 +41,12 @@ inverters, longer with more of them, and always before the next round."""
 MIN_POLL_GAP = 60
 """Shortest wait between two polls, also when a round is close."""
 
-MAX_TIMEOUTS_PER_CYCLE = 2
-"""After this many unanswered inverters in one cycle the rest is skipped."""
+POLL_BUDGET = 150
+"""Seconds into a poll after which no further inverter is started, so a poll
+of a slow ECU normally ends before its next round."""
+VALUE_MAX_AGE = 900
+"""Seconds a read value keeps counting when later polls miss that inverter:
+three ECU rounds."""
 MAX_INVERTER_POWER = 5000
 """Watts no microinverter reaches; a higher reading is not counted in totals."""
 MIN_POWER_PER_INVERTER = 0.2

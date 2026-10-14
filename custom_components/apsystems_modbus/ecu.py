@@ -45,8 +45,10 @@ INVERTER_INT_MODEL = 101
 INVERTER_FLOAT_MODEL = 111
 CONTROLS_MODELS = (114, 123)
 
-REQUEST_TIMEOUT = 15.0
-"""Seconds to wait for one reply; the ECU usually answers within 4 s."""
+REQUEST_TIMEOUT = 60.0
+"""Seconds to wait for one reply. The ECU usually answers within 4 s, but a
+busy one can take close to a minute, and a reply given up on still keeps it
+busy."""
 MESSAGE_SPACING = 0.3
 """Quiet time around every request, so a busy ECU is not flooded."""
 
@@ -159,8 +161,8 @@ async def async_check_controls(unit: ModbusUnit) -> None:
 class Status(Component):
     """Serial number, operating state and event flags, in one read.
 
-    The serial number rides along every poll at no extra request, so a
-    different inverter on a known address is noticed right away.
+    Read every poll while the ECU answers well, so a different inverter on a
+    known address is noticed at the next such poll.
     """
 
     register_ranges = ((40052, 40111),)
@@ -267,6 +269,7 @@ class Inverter(Device):
     """One microinverter, addressed as one Modbus unit of the ECU."""
 
     POLLED = ("measurements", "status")
+    MEASUREMENTS_ONLY = ("measurements",)
 
     def __init__(
         self, unit: ModbusUnit, unit_id: int, *, checks_layout: bool = True

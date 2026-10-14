@@ -29,6 +29,7 @@ async def test_diagnostics_are_redacted(
     assert "192.0.2.10" not in text
     assert "704000000001" not in text
     assert diagnostics["coordinator"]["available"] == [1, 2]
+    assert set(diagnostics["coordinator"]["value_age_seconds"]) == {1, 2}
     assert diagnostics["polling"] == {
         "interval_s": 300,
         "settle_s": 38,

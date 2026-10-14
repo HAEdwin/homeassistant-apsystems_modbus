@@ -149,9 +149,13 @@ automation:
   from the EMA app.
 - At night inverters read 0 V and 0 Hz. Energy today follows the ECU, which
   resets it during the night.
-- A silent inverter becomes unavailable, but the totals keep its share.
-  If the ECU stops answering, the integration tries again after every round
-  of the ECU and recovers by itself.
+- When the ECU answers slowly, the integration waits longer and reads fewer
+  registers, so most inverters still come through. Setting the power limit
+  can then take a minute or more.
+- An inverter that a poll misses keeps its last values for 15 minutes, also
+  in the totals. After that it becomes unavailable, but Energy today keeps
+  its share. If the ECU stops answering, the integration tries again after
+  every round of the ECU and recovers by itself.
 - A replaced inverter on the same address keeps counting under its existing
   device. If you give an inverter another address in EMA Manager, a repair
   asks you to choose Reconfigure. Devices and history are kept.
