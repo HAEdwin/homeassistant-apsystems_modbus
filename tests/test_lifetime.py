@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -12,15 +14,19 @@ from custom_components.apsystems_modbus.lifetime import (
     EnergyLedger,
     async_request_start,
     async_stored_lifetime,
+    ecu_day,
 )
 
 KEY = "704000000001"
 
 
+TODAY = date(2026, 10, 14)
+
+
 def poll(ledger: EnergyLedger, *, complete: bool = True, **counters: float) -> float:
-    """Feed one poll of daily counters (Wh) and return the lifetime total."""
+    """Feed one poll of daily counters (Wh) on one day; return the lifetime."""
     for serial, watt_hours in counters.items():
-        ledger.record_daily(serial, watt_hours)
+        ledger.record_daily(serial, watt_hours, TODAY)
     ledger.finish_poll(complete=complete)
     return ledger.lifetime
 
@@ -210,3 +216,146 @@ async def test_start_over_keeps_peak_power(
     await restored.async_load()
     assert restored.lifetime == 0
     assert restored.peak_power == 4200
+
+
+DAY_1 = date(2026, 10, 13)
+DAY_2 = date(2026, 10, 14)
+
+
+def read(ledger: EnergyLedger, day: date, *watt_hours: float) -> float:
+    """Feed polls of one inverter on ``day`` and return its lifetime."""
+    for value in watt_hours:
+        ledger.record_daily("a", value, day)
+        ledger.finish_poll(complete=True)
+    total = ledger.lifetime_of("a")
+    assert total is not None
+    return total
+
+
+async def test_reset_missed_while_not_read_is_still_booked(
+    ledger: EnergyLedger,
+) -> None:
+    read(ledger, DAY_1, 900, 1100)
+    # Not read at night; the next day's counter is already above yesterday's.
+    assert read(ledger, DAY_2, 2000) == 1100
+    assert read(ledger, DAY_2, 2050) == 1100 + 2050
+
+
+async def test_drop_then_rise_above_yesterday_is_a_new_day(
+    ledger: EnergyLedger,
+) -> None:
+    read(ledger, DAY_1, 1100)
+    assert read(ledger, DAY_2, 700, 1900) == 1100 + 1900
+
+
+async def test_stray_reading_before_the_ecu_resets_is_dropped(
+    ledger: EnergyLedger,
+) -> None:
+    read(ledger, DAY_1, 1100)
+    # After midnight the ECU still reports yesterday's counter until ~02:15.
+    assert read(ledger, DAY_2, 1100, 5, 1100, 1100) == 1100
+    # Its reset is booked as usual, and the day runs up from there.
+    assert read(ledger, DAY_2, 0, 0, 300) == 1100 + 300
+    assert read(ledger, DAY_2, 400) == 1100 + 400
+
+
+async def test_daily_counter_of_today_survives_a_restart(
+    hass: HomeAssistant, ledger: EnergyLedger
+) -> None:
+    read(ledger, DAY_1, 1100)
+    read(ledger, DAY_2, 0, 0, 800)
+    await ledger.async_save()
+
+    restarted = EnergyLedger(hass, KEY)
+    await restarted.async_load()
+    assert restarted.daily_of("a", DAY_2) == 800
+    assert restarted.daily_of("a", DAY_1) is None
+    assert restarted.daily_of("b", DAY_2) is None
+    # The date is kept too, so a reading on the next day is still recognised.
+    assert read(restarted, date(2026, 10, 15), 900, 950) == 1100 + 800 + 950
+
+
+LOCAL = ZoneInfo("Europe/Amsterdam")
+
+
+def at_times(ledger: EnergyLedger, *readings: tuple[str, float]) -> float:
+    """Feed readings of one inverter at local times; return its lifetime."""
+    for moment, value in readings:
+        now = datetime.fromisoformat(moment).replace(tzinfo=LOCAL)
+        ledger.record_daily("a", value, ecu_day(now))
+        ledger.finish_poll(complete=True)
+    total = ledger.lifetime_of("a")
+    assert total is not None
+    return total
+
+
+def test_the_ecu_day_starts_after_its_nightly_restart() -> None:
+    assert ecu_day(datetime(2026, 10, 14, 1, 30, tzinfo=LOCAL)) == date(2026, 10, 13)
+    assert ecu_day(datetime(2026, 10, 14, 4, 30, tzinfo=LOCAL)) == date(2026, 10, 14)
+
+
+async def test_final_counter_seen_after_midnight_counts_once(
+    ledger: EnergyLedger,
+) -> None:
+    # Home Assistant was off in the evening and comes back at 01:00, while
+    # the ECU still shows yesterday's final counter.
+    total = at_times(
+        ledger,
+        ("2026-10-13 18:00", 900),
+        ("2026-10-14 01:00", 1100),
+        ("2026-10-14 01:05", 1100),
+        ("2026-10-14 02:20", 0),
+        ("2026-10-14 02:25", 0),
+        ("2026-10-14 09:00", 50),
+        ("2026-10-14 10:00", 300),
+    )
+    assert total == 1100 + 300
+
+
+async def test_jump_confirmed_after_midnight_counts_once(ledger: EnergyLedger) -> None:
+    total = at_times(
+        ledger,
+        ("2026-10-13 22:00", 1100),
+        ("2026-10-13 23:50", 3500),
+        ("2026-10-14 00:10", 3500),
+        ("2026-10-14 02:20", 0),
+        ("2026-10-14 02:25", 0),
+        ("2026-10-14 09:00", 200),
+    )
+    assert total == 3500 + 200
+
+
+async def test_stray_reading_around_midnight_counts_nothing(
+    ledger: EnergyLedger,
+) -> None:
+    total = at_times(
+        ledger,
+        ("2026-10-13 22:00", 1100),
+        ("2026-10-13 23:55", 5),
+        ("2026-10-14 00:05", 5),
+        ("2026-10-14 00:10", 1100),
+        ("2026-10-14 02:20", 0),
+        ("2026-10-14 02:25", 0),
+        ("2026-10-14 09:00", 100),
+    )
+    assert total == 1100 + 100
+
+
+async def test_restart_missed_overnight_is_booked_in_the_morning(
+    ledger: EnergyLedger,
+) -> None:
+    total = at_times(
+        ledger,
+        ("2026-10-13 22:00", 1100),
+        ("2026-10-14 10:00", 2000),
+        ("2026-10-14 10:05", 2050),
+    )
+    assert total == 1100 + 2050
+
+
+async def test_no_counter_of_today_while_a_drop_waits(ledger: EnergyLedger) -> None:
+    read(ledger, DAY_2, 0, 0, 800)
+    assert ledger.daily_of("a", DAY_2) == 800
+    ledger.record_daily("a", 0, DAY_2)
+    # The ECU may already show its restarted counter; do not show the old one.
+    assert ledger.daily_of("a", DAY_2) is None

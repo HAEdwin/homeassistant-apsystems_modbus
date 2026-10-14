@@ -152,6 +152,9 @@ automation:
 - When the ECU answers slowly, the integration waits longer and reads fewer
   registers, so most inverters still come through. Setting the power limit
   can then take a minute or more.
+- The ECU serves one Modbus connection at a time. Another Modbus tool on the
+  ECU at the same time can make the integration lose its connection, so
+  stop such tools while it runs.
 - An inverter that a poll misses keeps its last values for 15 minutes, also
   in the totals. After that it becomes unavailable, but Energy today keeps
   its share. If the ECU stops answering, the integration tries again after

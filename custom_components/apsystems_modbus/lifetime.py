@@ -14,16 +14,23 @@ Readings that do not fit a counter going up wait for the next poll:
   anything, also when Home Assistant was off during the nightly reset.
 * A jump up of more than ``MAX_STEP_WH`` counts only when the next reading
   confirms it, so one bad high reading never sticks.
+* The ECU restarts the counters around 02:15, so its day is taken to start
+  at 04:00 (``ecu_day``). When an inverter was not read across the restart,
+  the first reading of a later ECU day may already be above the last one. A
+  changed reading on a later ECU day is therefore a new day once the next
+  reading confirms it; a reading back at the old level was stray.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta
 import math
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
@@ -36,10 +43,12 @@ MAX_STEP_WH = 2000
 """Largest rise between two polls taken without confirmation (2 kWh)."""
 APPLY_START_AFTER_POLLS = 12
 """Apply a start value once every inverter was read, or after this many polls."""
+ECU_DAY_START = timedelta(hours=4)
+"""The ECU restarts its daily counters around 02:15; its day counts from 04:00."""
 
 
 class _StoredLedger(TypedDict, total=False):
-    counters: dict[str, dict[str, float | None]]
+    counters: dict[str, dict[str, Any]]
     offset: float
     peak_power: float
     reported: float
@@ -56,10 +65,17 @@ class _Counter:
     """Last accepted daily counter."""
     pending: float | None = None
     """A reading that waits for the next poll: a drop or a large jump."""
+    day: str | None = None
+    """ECU day (ISO) on which ``last`` was set; ``None`` for older data."""
 
     @property
     def total(self) -> float:
         return self.base + (self.last or 0.0)
+
+
+def ecu_day(now: datetime) -> date:
+    """Return the day of the ECU's daily counters at local time ``now``."""
+    return (now - ECU_DAY_START).date()
 
 
 def _store(hass: HomeAssistant, ecu_key: str) -> Store[_StoredLedger]:
@@ -123,6 +139,7 @@ class EnergyLedger:
                 base=values.get("base") or 0.0,
                 last=values.get("last"),
                 pending=values.get("pending"),
+                day=values.get("day"),
             )
             for serial, values in data.get("counters", {}).items()
         }
@@ -139,35 +156,35 @@ class EnergyLedger:
         """Write the state soon, bundling the changes of several polls."""
         self._store.async_delay_save(self._as_data, SAVE_DELAY)
 
-    def record_daily(self, serial: str, watt_hours: float) -> None:
-        """Take a daily counter read from one inverter."""
+    def record_daily(
+        self, serial: str, watt_hours: float, day: date | None = None
+    ) -> None:
+        """Take a daily counter read from one inverter on ECU day ``day``."""
         if not math.isfinite(watt_hours) or not 0 <= watt_hours <= MAX_DAILY_WH:
             return
+        today = (day or ecu_day(dt_util.now())).isoformat()
         counter = self._counters.setdefault(serial, _Counter())
+        last = counter.last
+        if last is not None and counter.day is not None and today > counter.day:
+            _take_after_a_night(counter, last, watt_hours, today)
+            return
+        _take_same_day(counter, watt_hours)
+        if counter.last != last or counter.day is None:
+            counter.day = today
+
+    def daily_of(self, serial: str, day: date) -> float | None:
+        """Return the counter of one inverter if it was set on ECU day ``day``.
+
+        Not while a drop waits for confirmation: the ECU may already show the
+        restarted counter.
+        """
+        counter = self._counters.get(serial)
+        if counter is None or counter.day != day.isoformat():
+            return None
         last, pending = counter.last, counter.pending
-        counter.pending = None
-        if last is None:
-            counter.last = watt_hours
-        elif pending is None:
-            if last <= watt_hours <= last + MAX_STEP_WH:
-                counter.last = watt_hours
-            else:
-                counter.pending = watt_hours
-        elif pending > last:
-            # A large jump: real if the counter kept going from there.
-            if watt_hours >= pending:
-                counter.last = watt_hours
-            else:
-                self.record_daily(serial, watt_hours)
-        elif watt_hours >= last:
-            # Back at the old level: the drop was a stray reading.
-            self.record_daily(serial, watt_hours)
-        elif watt_hours > pending:
-            # Running up again from the low value: a new day has started.
-            counter.base += last
-            counter.last = watt_hours
-        else:
-            counter.pending = watt_hours
+        if last is not None and pending is not None and pending < last:
+            return None
+        return last
 
     def record_power(self, watts: float) -> None:
         """Keep the highest total power seen."""
@@ -223,3 +240,52 @@ class EnergyLedger:
             "peak_power": self.peak_power,
             "calibrate_to": self._calibrate_to,
         }
+
+
+def _take_same_day(counter: _Counter, watt_hours: float) -> None:
+    """Take a reading on the date the last counter was set."""
+    last, pending = counter.last, counter.pending
+    counter.pending = None
+    if last is None:
+        counter.last = watt_hours
+    elif pending is None:
+        if last <= watt_hours <= last + MAX_STEP_WH:
+            counter.last = watt_hours
+        else:
+            counter.pending = watt_hours
+    elif pending > last:
+        # A large jump: real if the counter kept going from there.
+        if watt_hours >= pending:
+            counter.last = watt_hours
+        else:
+            _take_same_day(counter, watt_hours)
+    elif watt_hours >= last:
+        # Back at the old level: the drop was a stray reading.
+        _take_same_day(counter, watt_hours)
+    elif watt_hours > pending:
+        # Running up again from the low value: a new day has started.
+        counter.base += last
+        counter.last = watt_hours
+    else:
+        counter.pending = watt_hours
+
+
+def _take_after_a_night(
+    counter: _Counter, last: float, watt_hours: float, today: str
+) -> None:
+    """Take a reading on a later ECU day than the last counter was set.
+
+    An ECU that restarts its counters late still reports yesterday's counter,
+    so the same value is no news. Any other value is a new day once the next
+    reading confirms it by not going down; one stray reading is dropped again.
+    """
+    pending = counter.pending
+    counter.pending = None
+    if watt_hours == last:
+        return
+    if pending is not None and watt_hours >= pending:
+        counter.base += last
+        counter.last = watt_hours
+        counter.day = today
+        return
+    counter.pending = watt_hours

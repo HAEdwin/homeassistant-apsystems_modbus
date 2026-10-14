@@ -36,7 +36,7 @@ from .const import (
     VALUE_MAX_AGE,
 )
 from .ecu import Inverter
-from .lifetime import MAX_DAILY_WH, EnergyLedger
+from .lifetime import MAX_DAILY_WH, EnergyLedger, ecu_day
 from .power_limit import PowerLimit, store_for
 
 _LOGGER = logging.getLogger(__name__)
@@ -162,6 +162,12 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         """Configured serial number per unit id."""
         self.daily: dict[int, float] = {}
         """Last valid daily counter per unit id in Wh, as the ECU reports it."""
+        # After a restart today's counters come from storage, so Energy today
+        # is complete before every inverter was read again.
+        today = ecu_day(dt_util.now())
+        for unit_id, serial in self.serials.items():
+            if (counter := ledger.daily_of(serial, today)) is not None:
+                self.daily[unit_id] = counter
         self.power_limit = PowerLimit(self, lead, store_for(hass, entry.entry_id))
         """The ECU-wide power limit, written and read back through ``lead``."""
         self._degraded = False
@@ -222,6 +228,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 ) from err
             except ModbusTimeoutError:
                 data.ended_in_timeout = True
+                _LOGGER.debug("Unit %s did not answer; units %s wait", unit_id, waiting)
             except ModbusError as err:
                 _LOGGER.debug("Unit %s: poll failed: %s", unit_id, err)
                 self._stuck.discard(unit_id)
@@ -233,9 +240,15 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                     isinstance(err, ModbusTimeoutError)
                     for err in report.failed.values()
                 )
+                if data.ended_in_timeout:
+                    _LOGGER.debug(
+                        "Unit %s: measurements read, status did not answer; "
+                        "units %s wait",
+                        unit_id,
+                        waiting,
+                    )
             if data.ended_in_timeout:
                 self._stuck.add(unit_id)
-                _LOGGER.debug("Unit %s did not answer; units %s wait", unit_id, waiting)
                 break
             self._stuck.discard(unit_id)
 
@@ -309,6 +322,12 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         if not limit_done:
             # Runs after the reads, so write_lock is free; see power_limit.py.
             await self.power_limit.async_after_poll(data)
+        if data.ended_in_timeout:
+            # The ECU stays busy with an unanswered request and its next
+            # cycle tends to get nothing on the same link; a fresh one works.
+            # Under write_lock, so a write that is under way is not cut off.
+            async with self.write_lock:
+                await self._async_drop_link()
         self._plan_next_poll()
         return data
 
@@ -441,6 +460,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         an earlier cycle, so the totals do not dip. The counters and the
         changes are taken from this cycle's reads only.
         """
+        today = ecu_day(dt_util.now())
         for unit_id in data.recent:
             measurements = self.inverters[unit_id].measurements
             power = measurements.ac_power or 0.0
@@ -462,7 +482,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             daily = measurements.energy_today
             if daily is not None:
                 # The ledger guards the lifetime total against stray readings.
-                self.ledger.record_daily(self.serials[unit_id], daily)
+                self.ledger.record_daily(self.serials[unit_id], daily, today)
                 # Energy today simply follows the ECU, including its nightly
                 # reset; only impossible values are left out.
                 if math.isfinite(daily) and 0 <= daily <= MAX_DAILY_WH:

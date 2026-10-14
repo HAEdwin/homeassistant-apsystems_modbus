@@ -6,7 +6,7 @@ import asyncio
 from datetime import timedelta
 import itertools
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from freezegun.api import FrozenDateTimeFactory
 from modbus_connection import ModbusConnectionError, ModbusTimeoutError
@@ -437,6 +437,45 @@ async def test_peak_comes_from_one_poll_only(
     # only what this poll read.
     assert coordinator.data.power == pytest.approx(1406.0)
     assert coordinator.ledger.peak_power == pytest.approx(900.0)
+
+
+async def test_link_is_renewed_after_a_cycle_ends_unanswered(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    drop = AsyncMock()
+
+    with patch.object(coordinator, "_async_drop_link", drop):
+        await coordinator.async_refresh()
+        assert drop.await_count == 0
+
+        # Unit 2 is last and does not answer: the cycle counts as complete,
+        # but the ECU is still busy with it, so the next cycle starts fresh.
+        mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+        await coordinator.async_refresh()
+        assert coordinator.data.cut_short is False
+        assert drop.await_count == 1
+
+
+async def test_energy_today_is_complete_right_after_a_restart(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    before = mock_config_entry.runtime_data.data.energy_today
+
+    # After a restart unit 2 does not answer yet; its counter of today counts.
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.data.available == {1}
+    assert coordinator.data.energy_today == pytest.approx(before)
 
 
 async def test_an_older_value_does_not_move_the_last_change(
