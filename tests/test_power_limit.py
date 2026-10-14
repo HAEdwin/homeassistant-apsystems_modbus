@@ -502,9 +502,14 @@ async def test_a_stubborn_ecu_is_not_written_over_and_over(
     assert len(writes) == 6
     assert "no more writes until the limit is chosen again" in caplog.text
 
-    # A new choice tries again.
+    # Choosing the same value again tries again, as does a new value.
+    await set_limit(hass, 30)
+    assert writes[6:8] == [
+        (EXPORT_LIMIT_ADDRESS, 300),
+        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
+    ]
     await set_limit(hass, 40)
-    assert writes[6:] == [
+    assert writes[8:] == [
         (EXPORT_LIMIT_ADDRESS, 400),
         (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
     ]

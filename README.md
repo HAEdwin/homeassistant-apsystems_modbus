@@ -93,8 +93,8 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
 - Inverters follow a change within a few minutes, in tests up to about 15.
 - At 0 each inverter still delivers about 20 to 30 W.
 - The integration keeps the limit in place by itself. After a failed change,
-  a restart of the ECU or a restart of Home Assistant it sends the limit
-  again.
+  a restart of Home Assistant, or when the connection to the ECU broke, as
+  with most restarts of the ECU, it sends the limit again.
 - With the installation power entered, a second control sets the same limit
   in kW. If an inverter then delivers clearly more than the limit allows, a
   notice under *Settings → Repairs* asks you to check the installation power.

@@ -391,7 +391,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             self._silent = True
             _LOGGER.warning(
                 "The ECU did not answer. Trying again after every round of "
-                "the ECU until it responds"
+                "the ECU until it responds. If this lasts, check the IP address "
+                "and that Modbus is on in EMA Manager (Local Access)"
             )
         self._plan_next_poll()
         # A link that stopped answering is opened fresh next time.

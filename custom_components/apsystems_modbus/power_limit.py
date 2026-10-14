@@ -237,7 +237,9 @@ class PowerLimit:
                 translation_placeholders={"value": str(value)},
             )
         percent = min(max(round(value), 0), MAX_EXPORT_LIMIT)
-        if percent == self.desired and not self.pending:
+        # The same value again changes nothing, unless the ECU does not show
+        # it: then it is a request to try once more.
+        if percent == self.desired and not self.pending and self.shown == percent:
             return
         self.desired = percent
         self._remember()
