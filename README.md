@@ -1,4 +1,4 @@
-# APsystems Modbus for Home Assistant
+# <img src="custom_components/apsystems_modbus/brand/icon@2x.png" alt="" width="40" align="top"> APsystems Modbus for Home Assistant
 
 [![Release](https://img.shields.io/github/v/release/christianvaes/homeassistant-apsystems_modbus)](https://github.com/christianvaes/homeassistant-apsystems_modbus/releases)
 [![HACS](https://img.shields.io/badge/HACS-custom-41BDF5)](https://hacs.xyz)
