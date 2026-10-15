@@ -92,8 +92,9 @@ You get one device for the ECU and one device per inverter.
 </table>
 
 Under *Configure* you can enter the installation power, correct the lifetime
-energy and reset the peak power. A correction shows up once as production in
-that hour. Fix that under *Settings → Tools → Statistics*.
+energy and reset the peak power. A lifetime correction counts once as
+production in the Energy dashboard. Undo that under *Settings → Tools →
+Statistics*.
 
 ## Energy dashboard
 
@@ -150,10 +151,9 @@ automation:
   resets it during the night.
 - When the ECU answers slowly, setting the power limit can take a minute or
   more.
-- An inverter that a poll misses keeps its last values for 15 minutes, also
-  in the totals. After that it becomes unavailable, but Energy today keeps
-  its share. If the ECU stops answering, the integration tries again after
-  every round of the ECU and recovers by itself.
+- When the ECU skips an inverter, its last values stay for up to 15 minutes,
+  also in the totals. After that it shows unavailable until the ECU answers
+  again. The integration recovers by itself.
 - A replaced inverter on the same address keeps counting under its existing
   device.
 
