@@ -74,6 +74,7 @@ async def test_enable_flag_decoding(
 
 async def test_offline_inverter(mock_ecu: MockModbusConnection) -> None:
     unit = mock_ecu.for_unit(1)
+    set_float32(unit, 40138, 0.0)  # voltage
     set_float32(unit, 40144, 0.0)  # power
     set_float32(unit, 40146, 0.0)  # frequency
     inverter = Inverter(unit, 1)
@@ -82,6 +83,21 @@ async def test_offline_inverter(mock_ecu: MockModbusConnection) -> None:
     assert inverter.measurements.is_online is False
     # The daily counter keeps its value while the inverter is offline.
     assert inverter.measurements.energy_today == pytest.approx(554.08, abs=0.01)
+
+
+async def test_leftover_watt_at_night_is_offline(
+    mock_ecu: MockModbusConnection,
+) -> None:
+    # At night the ECU may keep 1 W of an inverter that is off the grid.
+    unit = mock_ecu.for_unit(1)
+    set_float32(unit, 40138, 0.0)
+    set_float32(unit, 40144, 1.0)
+    set_float32(unit, 40146, 0.0)
+    inverter = Inverter(unit, 1)
+    await inverter.async_poll(("measurements",))
+
+    assert inverter.measurements.is_online is False
+    assert inverter.measurements.ac_power == 1.0
 
 
 async def test_stray_zero_frequency_still_online(

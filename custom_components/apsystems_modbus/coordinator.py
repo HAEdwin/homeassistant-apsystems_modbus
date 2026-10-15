@@ -445,7 +445,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         an earlier cycle, so the totals do not dip. The counters and the
         changes are taken from this cycle's reads only.
         """
-        today = ecu_day(dt_util.now())
+        now = dt_util.now()
+        today = ecu_day(now)
         for unit_id in data.recent:
             measurements = self.inverters[unit_id].measurements
             power = measurements.ac_power or 0.0
@@ -459,6 +460,11 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         # Values from different cycles could add up to a peak that never was,
         # so the peak only looks at this cycle's reads.
         fresh_power = 0.0
+        # The ECU restarts its counters between midnight and 04:00, when its
+        # day is still the calendar day before.
+        night = today != now.date()
+        restarted = False
+        taken: set[int] = set()
         for unit_id in data.available:
             measurements = self.inverters[unit_id].measurements
             power = measurements.ac_power or 0.0
@@ -471,8 +477,19 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 # Energy today simply follows the ECU, including its nightly
                 # reset; only impossible values are left out.
                 if math.isfinite(daily) and 0 <= daily <= MAX_DAILY_WH:
+                    last_day, last = self.daily.get(unit_id, (None, 0.0))
+                    if night and daily == 0 and last > 0 and last_day == today:
+                        restarted = True
                     self.daily[unit_id] = (today, daily)
+                    taken.add(unit_id)
             snapshot[unit_id] = (daily, measurements.ac_power)
+
+        if restarted:
+            # Inverters not read since the restart would still count with
+            # yesterday's value, so they wait until they are read again.
+            self.daily = {
+                unit: entry for unit, entry in self.daily.items() if unit in taken
+            }
 
         # An inverter that did not answer counts with its last value of the
         # same ECU day; a value from yesterday no longer counts.

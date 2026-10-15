@@ -492,6 +492,58 @@ async def test_energy_today_drops_yesterday_of_an_unread_inverter(
     assert coordinator.data.energy_today == pytest.approx(50.0)
 
 
+def _local(text: str) -> str:
+    """Return a local time of the test's Home Assistant as UTC text."""
+    moment = dt_util.parse_datetime(text)
+    assert moment is not None
+    return dt_util.as_utc(
+        moment.replace(tzinfo=dt_util.get_default_time_zone())
+    ).isoformat()
+
+
+async def test_energy_today_after_the_nightly_restart(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    freezer.move_to(_local("2026-10-14 20:00:00"))
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.data.energy_today == pytest.approx(554.08 + 541.79, abs=0.01)
+
+    # At 02:40 the ECU has restarted its counters. Unit 2 is not read yet.
+    freezer.move_to(_local("2026-10-15 02:40:00"))
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    set_float32(mock_ecu.for_unit(1), ENERGY_TODAY, 0.0)
+    await coordinator.async_refresh()
+    assert coordinator.data.energy_today == 0.0
+
+    # Unit 2 answers again, also restarted.
+    mock_ecu.for_unit(2).fail_requests(None)
+    set_float32(mock_ecu.for_unit(2), ENERGY_TODAY, 0.0)
+    await coordinator.async_refresh()
+    assert coordinator.data.energy_today == 0.0
+    assert coordinator.daily_today(2) == 0.0
+
+
+async def test_energy_today_ignores_a_stray_zero_by_day(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    freezer.move_to(_local("2026-10-14 12:00:00"))
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+
+    # By day a 0 of unit 1 is no restart: unit 2 keeps counting.
+    mock_ecu.for_unit(2).fail_requests(ModbusTimeoutError())
+    set_float32(mock_ecu.for_unit(1), ENERGY_TODAY, 0.0)
+    await coordinator.async_refresh()
+    assert coordinator.data.energy_today == pytest.approx(541.79, abs=0.01)
+
+
 async def test_unchanged_totals_are_not_written_again(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,

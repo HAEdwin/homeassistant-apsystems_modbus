@@ -217,13 +217,15 @@ class Measurements(Component):
     def is_online(self) -> bool:
         """Whether the inverter is awake and on the grid.
 
-        At dusk an inverter still measures the grid while it delivers 0 W. It
-        counts as online until it switches off for the night.
+        Modbus has no online flag, and the operating state always reads MPPT.
+        An inverter on the grid measures its voltage and frequency, also at
+        dusk while it delivers 0 W. Once it is off for the night both read 0,
+        while the ECU may keep its last power of 1 or 2 W.
 
-        The ECU occasionally reports a stray 0 for frequency or power while an
+        The ECU occasionally reports a stray 0 for the frequency while an
         inverter is producing, so either one being positive counts as online.
         """
-        return bool(self.frequency) or bool(self.ac_power)
+        return bool(self.frequency) or bool(self.ac_voltage)
 
     @property
     def export_limit_enabled(self) -> bool | None:

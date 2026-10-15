@@ -21,7 +21,9 @@ async def test_online_and_grid_connection(
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
 ) -> None:
-    set_float32(mock_ecu.for_unit(2), 40144, 0.0)
+    # Off the grid at night, with the 1 W the ECU may keep.
+    set_float32(mock_ecu.for_unit(2), 40138, 0.0)
+    set_float32(mock_ecu.for_unit(2), 40144, 1.0)
     set_float32(mock_ecu.for_unit(2), 40146, 0.0)
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)

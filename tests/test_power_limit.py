@@ -1071,12 +1071,14 @@ async def test_no_refresh_while_an_inverter_is_offline(
 
     # Early morning: unit 2 answers but does not feed in yet.
     unit = mock_ecu.for_unit(2)
+    set_float32(unit, 40138, 0.0)
     set_float32(unit, 40144, 0.0)
     set_float32(unit, 40146, 0.0)
     freezer.tick(REFRESH_DELAY)
     await coordinator.async_refresh()
     assert writes == []
 
+    set_float32(unit, 40138, 230.0)
     set_float32(unit, 40144, 150.0)
     set_float32(unit, 40146, 50.0)
     await coordinator.async_refresh()
@@ -1857,6 +1859,7 @@ async def test_refresh_waits_at_most_an_hour_for_a_dark_inverter(
 
     # Unit 2 answers but stays dark all day, e.g. a broken panel.
     unit = mock_ecu.for_unit(2)
+    set_float32(unit, 40138, 0.0)
     set_float32(unit, 40144, 0.0)
     set_float32(unit, 40146, 0.0)
     freezer.tick(REFRESH_DELAY)
@@ -1879,8 +1882,11 @@ async def test_no_refresh_at_night(
     writes = record_writes(mock_ecu.for_unit(1))
 
     for unit_id in (1, 2):
+        set_float32(mock_ecu.for_unit(unit_id), 40138, 0.0)
         set_float32(mock_ecu.for_unit(unit_id), 40144, 0.0)
         set_float32(mock_ecu.for_unit(unit_id), 40146, 0.0)
+    # The ECU may keep 1 W of an inverter that is off for the night.
+    set_float32(mock_ecu.for_unit(2), 40144, 1.0)
     freezer.tick(REFRESH_DELAY + REFRESH_REPEAT)
     await coordinator.async_refresh()
     assert writes == []
