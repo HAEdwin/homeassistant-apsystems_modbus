@@ -31,6 +31,9 @@ only the last one partly shows, as a failed poll. So:
   the chosen value again. The in-between value is not shown.
 * With the installation power known, an inverter that delivers clearly more
   than the limit allows has missed it, and the limit is refreshed at once.
+  Below 100 a missed limit then shows as soon as it matters, so the timed
+  refreshes above are left out: they would only add writes to an ECU that
+  is easily overloaded.
   If two such refreshes do not help, the power is probably entered wrong:
   the user is told instead of the ECU being written over and over.
 
@@ -198,12 +201,26 @@ class PowerLimit:
         power = self._coordinator.config_entry.options.get(CONF_INSTALLATION_POWER)
         return float(power) if power else None
 
+    def _watched(self) -> bool:
+        """Whether a missed limit shows in the power of the inverters.
+
+        Then an inverter above the limit is refreshed at once, and no timed
+        refresh is needed. A missed release to 100 shows as less power,
+        which a cloud does too, so 100 is never watched.
+        """
+        return (
+            self.installation_power is not None
+            and self.desired is not None
+            and self.desired < NO_LIMIT
+        )
+
     async def async_load(self) -> None:
         """Take over the choice stored before Home Assistant (re)started.
 
         Below 100 the ECU may have restarted in the meantime and cleared the
-        limit, so the choice is sent again at the first usable poll. At 100
-        there is nothing a restart can have undone.
+        limit, so the choice is sent again at the first usable poll, unless
+        the power shows a missed limit. At 100 there is nothing a restart can
+        have undone.
         """
         if self._store is None:
             return
@@ -219,7 +236,7 @@ class PowerLimit:
 
         A restart of the ECU clears the limit on the inverters and breaks
         the open connection. The limit is then sent again once the ECU
-        answers.
+        answers, unless the power shows a missed limit.
         """
         self._ecu_was_silent = True
 
@@ -353,7 +370,11 @@ class PowerLimit:
             # to put back. At most one such refresh an hour, in case a
             # network drops the connection between every poll; a later one
             # is postponed, never dropped.
-            if self.desired is not None and self.desired < NO_LIMIT:
+            if (
+                self.desired is not None
+                and self.desired < NO_LIMIT
+                and self.installation_power is None
+            ):
                 started = self._refresh.last_started
                 due = now if started is None else max(now, started + REFRESH_REPEAT)
                 self._plan_refresh_by(due)
@@ -391,17 +412,25 @@ class PowerLimit:
 
         Only an excess is a sure sign: delivering less can be a cloud. Two
         polls in a row must show it, and the last write must be old enough to
-        have arrived. The count of such refreshes only starts over with a new
-        choice or a restart, so a wrong installation power cannot cause a
-        refresh every time the sun comes out.
+        have arrived. The count of such refreshes starts over with a new
+        choice, a restart and each night, so a wrong installation power costs
+        at most two refreshes a day, not one every time the sun comes out.
         """
+        inverters = self._coordinator.inverters
+        if data.available and not any(
+            inverters[unit].measurements.is_online for unit in data.available
+        ):
+            # An ECU that restarted overnight clears the limit on the
+            # inverters without showing it, so each day gets fresh chances.
+            self.overshoot_refreshes = 0
         if self.pending:
             return  # The chosen value has not reached the ECU yet.
         over = self._overshooting(data)
         confirmed = over & self._over_last_poll
         self._over_last_poll = over
+        # Without a write since the start, the last write counts as long ago.
         written = self._last_written
-        if not confirmed or written is None or now - written < REFRESH_DELAY:
+        if not confirmed or (written is not None and now - written < REFRESH_DELAY):
             return
         due = self._refresh.next_at
         if due is not None and now >= due:
@@ -453,9 +482,10 @@ class PowerLimit:
         )
 
     def _reset_overshoot(self) -> None:
-        """Forget earlier refreshes for an excess, and any notice about it."""
-        if self.overshoot_refreshes == 0:
-            return
+        """Forget earlier refreshes for an excess, and any notice about it.
+
+        The notice can outlive the count, which starts over each night.
+        """
         self.overshoot_refreshes = 0
         ir.async_delete_issue(
             self._coordinator.hass,
@@ -492,8 +522,13 @@ class PowerLimit:
         """Plan ``count`` refreshes, the first one after ``delay``.
 
         Any refresh under way is dropped: the value just written takes over.
+        Nothing is planned while the power shows a missed limit.
         """
         self._refresh.step_written = None
+        if self._watched():
+            self._refresh.next_at = None
+            self._refresh.left = 0
+            return
         self._refresh.next_at = now + delay
         self._refresh.left = max(count, 1)
 
