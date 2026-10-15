@@ -47,13 +47,15 @@ between two reads without ``write_lock``. Calling it while holding
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
 import math
 from typing import TYPE_CHECKING, Any
 
-from modbus_connection import ModbusError
+from modbus_connection import ModbusError, ModbusTimeoutError
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -158,7 +160,7 @@ class PowerLimit:
         self,
         coordinator: EcuCoordinator,
         control: Inverter,
-        store: Store[dict[str, Any]] | None = None,
+        store: Store[dict[str, Any]],
     ) -> None:
         """Bind to the inverter whose unit carries the writes and the readback."""
         self._coordinator = coordinator
@@ -222,8 +224,6 @@ class PowerLimit:
         the power shows a missed limit. At 100 there is nothing a restart can
         have undone.
         """
-        if self._store is None:
-            return
         desired = stored_choice(await self._store.async_load())
         if desired is None:
             return
@@ -296,16 +296,33 @@ class PowerLimit:
         100 the percentage is reset and the flag switched off. So a failed
         second write never limits more than asked; the next poll completes
         it. ``show`` makes the written value the shown one; the in-between
-        value of a refresh is not shown.
+        value of a refresh is not shown. Nothing is written while the ECU may
+        still work on an unanswered request: it would only queue up behind it.
         """
-        async with self._coordinator.write_lock:
+        async with self._ready_link():
             await self.control.async_set_export_limit(percent)
-        async with self._coordinator.write_lock:
+        async with self._ready_link():
             await self.control.async_set_export_limit_enabled(percent < NO_LIMIT)
         # What the inverters delivered before this write says nothing any more.
         self._over_last_poll = set()
         if show:
             self._adopt(percent)
+
+    @asynccontextmanager
+    async def _ready_link(self) -> AsyncIterator[None]:
+        """Hold ``write_lock`` for one write on a link that is not busy.
+
+        A write that goes unanswered leaves the link busy, like a read.
+        """
+        coordinator = self._coordinator
+        async with coordinator.write_lock:
+            if coordinator.link_busy:
+                raise ModbusTimeoutError("the ECU is busy with an earlier request")
+            try:
+                yield
+            except ModbusTimeoutError:
+                coordinator.link_busy = True
+                raise
 
     async def async_after_poll(self, data: EcuData) -> None:
         """Update the shown value and make the ECU follow the chosen one.
@@ -364,6 +381,10 @@ class PowerLimit:
         self, data: EcuData, reported: int, now: datetime
     ) -> None:
         """Write whatever is needed to keep the ECU on the chosen limit."""
+        if self._lock.locked():
+            # A change of the user is being written. This poll read the value
+            # before it, so the next poll judges again.
+            return
         if self._ecu_was_silent:
             self._ecu_was_silent = False
             # A restart only ever clears limits, so at 100 there is nothing
@@ -501,12 +522,12 @@ class PowerLimit:
 
     def _remember(self) -> None:
         """Store the chosen limit for the next start."""
-        if self._store is not None and self.desired is not None:
+        if self.desired is not None:
             self._store.async_delay_save(self._stored, 0)
 
     async def async_save(self) -> None:
         """Write the chosen limit now, for an unload or reload."""
-        if self._store is not None and self.desired is not None:
+        if self.desired is not None:
             await self._store.async_save(self._stored())
 
     def _stored(self) -> dict[str, Any]:
@@ -554,11 +575,16 @@ class PowerLimit:
                 await self._async_write(desired)
             except ModbusError as err:
                 _LOGGER.debug("Rewriting power limit %s %% failed: %s", desired, err)
-                return
-            self.pending = False
-            self._last_written = now
-            self._plan_refreshes(now)
-            self.rewrites += 1
+                # An ECU that refuses writes is not written forever. A busy
+                # ECU or a choice that never arrived is tried again.
+                if self.pending or isinstance(err, ModbusTimeoutError):
+                    return
+                self.rewrites += 1
+            else:
+                self.pending = False
+                self._last_written = now
+                self._plan_refreshes(now)
+                self.rewrites += 1
         if self.rewrites >= MAX_REWRITES:
             _LOGGER.warning(
                 "The ECU keeps reporting a power limit of %s %% instead of %s %%; "
@@ -581,6 +607,7 @@ class PowerLimit:
             due = self._refresh.next_at
             if (
                 (desired := self.desired) is None
+                or self.pending
                 or self._refresh.step_written is not None
                 or due is None
                 or now < due

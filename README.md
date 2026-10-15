@@ -107,12 +107,8 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
 
 - Inverters follow a change within a few minutes, in tests up to about 15.
 - At 0 each inverter still delivers about 20 to 30 W.
-- The integration keeps the limit in place by itself. It sends the limit
-  again after a failed change or when the ECU reports another value. With
-  the installation power entered, it also does so when an inverter delivers
-  clearly more than the limit allows. Without it, it does so after a restart
-  of Home Assistant and when the connection to the ECU broke, as with most
-  restarts of the ECU.
+- The integration keeps the limit in place by itself. It works best with
+  the installation power entered under *Configure*.
 - With the installation power entered, a second control sets the same limit
   in kW. If an inverter then delivers clearly more than the limit allows, a
   notice under *Settings → Repairs* asks you to check the installation power.
@@ -152,19 +148,14 @@ automation:
   from the EMA app.
 - At night inverters read 0 V and 0 Hz. Energy today follows the ECU, which
   resets it during the night.
-- When the ECU answers slowly, the integration waits longer and reads fewer
-  registers, so most inverters still come through. Setting the power limit
-  can then take a minute or more.
-- The ECU serves one Modbus connection at a time. Another Modbus tool on the
-  ECU at the same time can make the integration lose its connection, so
-  stop such tools while it runs.
+- When the ECU answers slowly, setting the power limit can take a minute or
+  more.
 - An inverter that a poll misses keeps its last values for 15 minutes, also
   in the totals. After that it becomes unavailable, but Energy today keeps
   its share. If the ECU stops answering, the integration tries again after
   every round of the ECU and recovers by itself.
 - A replaced inverter on the same address keeps counting under its existing
-  device. If you give an inverter another address in EMA Manager, a repair
-  asks you to choose Reconfigure. Devices and history are kept.
+  device.
 
 ## Troubleshooting
 
@@ -186,7 +177,7 @@ because a second Modbus connection disturbs the ECU. Then run on a computer in
 your network:
 
 ```bash
-python3 tools/dump_registers.py --host <ecu-ip> --units 1 2 --probe-unit 9 --out .
+python3 tools/dump_registers.py --host <ecu-ip> --units 1 2 --out .
 ```
 
 It only reads. Replace the serial numbers in the JSON file before sharing, and

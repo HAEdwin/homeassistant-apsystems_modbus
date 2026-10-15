@@ -137,15 +137,6 @@
       "temperature": {
         "name": "Temperature"
       },
-      "apparent_power": {
-        "name": "Apparent power"
-      },
-      "reactive_power": {
-        "name": "Reactive power"
-      },
-      "power_factor": {
-        "name": "Power factor"
-      },
       "status": {
         "name": "Status",
         "state": {

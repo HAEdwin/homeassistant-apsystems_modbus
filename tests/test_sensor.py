@@ -9,7 +9,7 @@ from modbus_connection import ModbusTimeoutError
 from modbus_connection.mock import MockModbusConnection
 import pytest
 
-from homeassistant.const import STATE_UNAVAILABLE
+from homeassistant.const import STATE_UNAVAILABLE, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -87,7 +87,7 @@ async def test_inverter_sensors(
     )
 
 
-async def test_channels_beyond_model_and_extras_are_disabled(
+async def test_only_the_panels_the_model_has(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
@@ -99,12 +99,11 @@ async def test_channels_beyond_model_and_extras_are_disabled(
     assert enabled is not None
     assert enabled.disabled_by is None
 
+    # A DS3 has two panels, and the technical AC values are not offered.
     for key in ("dc_voltage_3", "dc_power_4", "apparent_power", "power_factor"):
-        entry = registry.async_get_entity_id("sensor", DOMAIN, f"704000000001-{key}")
-        assert entry is not None
         assert (
-            registry.async_get(entry).disabled_by
-            is er.RegistryEntryDisabler.INTEGRATION
+            registry.async_get_entity_id("sensor", DOMAIN, f"704000000001-{key}")
+            is None
         )
 
 
@@ -331,3 +330,23 @@ async def test_impossible_daily_counter_is_left_out(
     assert float(
         hass.states.get("sensor.inverter_704000000001_energy_today").state
     ) == pytest.approx(0.554, abs=0.001)
+
+
+async def test_technical_sensors_are_diagnostic(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    registry = er.async_get(hass)
+    for entity_id in (
+        "sensor.inverter_703000000002_ac_voltage",
+        "sensor.inverter_703000000002_panel_1_power",
+        "sensor.inverter_703000000002_temperature",
+    ):
+        assert (
+            registry.async_get(entity_id).entity_category is EntityCategory.DIAGNOSTIC
+        )
+    assert (
+        registry.async_get("sensor.inverter_703000000002_power").entity_category is None
+    )

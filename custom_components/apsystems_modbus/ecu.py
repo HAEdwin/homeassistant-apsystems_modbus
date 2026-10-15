@@ -25,6 +25,7 @@ Quirks handled here rather than in Home Assistant:
 from __future__ import annotations
 
 from enum import IntEnum, IntFlag
+import re
 
 from modbus_connection import ModbusUnit
 from modbus_connection.model import (
@@ -54,7 +55,10 @@ MESSAGE_SPACING = 0.3
 
 MAX_CHANNELS = 4
 FOUR_CHANNEL_MODELS = ("QT2", "QS1", "DS3D")
-DEFAULT_CHANNELS = 2
+TWO_CHANNEL_MODELS = ("DS3", "YC600")
+"""Known models. An unknown model gets all four channels, so none is missing."""
+SERIAL_PATTERN = re.compile(r"[0-9A-Za-z]{1,32}")
+"""A serial number names the stored totals file, so only letters and digits."""
 
 ENABLED_VALUES = frozenset({1, ord("1")})
 DISABLED_VALUES = frozenset({0, ord("0")})
@@ -114,9 +118,12 @@ def _validate_export_limit(value: float) -> float:
 
 def channel_count(model: str | None) -> int:
     """Return how many DC inputs (panels) an inverter model has."""
-    if model and model.upper().startswith(FOUR_CHANNEL_MODELS):
+    name = (model or "").upper()
+    if name.startswith(FOUR_CHANNEL_MODELS):
         return MAX_CHANNELS
-    return DEFAULT_CHANNELS
+    if name.startswith(TWO_CHANNEL_MODELS):
+        return 2
+    return MAX_CHANNELS
 
 
 class Identity(Component):
@@ -147,6 +154,8 @@ class Identity(Component):
             problems.append(f"model {self.inverter_int_model} at 40070")
         if self.inverter_float_model != INVERTER_FLOAT_MODEL:
             problems.append(f"model {self.inverter_float_model} at 40122")
+        if not SERIAL_PATTERN.fullmatch(self.serial_number or ""):
+            problems.append(f"serial number {self.serial_number!r}")
         if problems:
             raise UnsupportedLayoutError("; ".join(problems))
 
@@ -273,30 +282,17 @@ class Inverter(Device):
     POLLED = ("measurements", "status")
     MEASUREMENTS_ONLY = ("measurements",)
 
-    def __init__(
-        self, unit: ModbusUnit, unit_id: int, *, checks_layout: bool = True
-    ) -> None:
+    def __init__(self, unit: ModbusUnit, unit_id: int) -> None:
         """Bind the register components to a unit of the ECU.
 
-        All units of one ECU share the same layout, so only one of them needs
-        ``checks_layout``; the others skip the identity read.
+        The register layout is checked once, when the ECU is added.
         """
         super().__init__(unit)
         self.unit_id = unit_id
-        self.checks_layout = checks_layout
         unit.require_timeout(REQUEST_TIMEOUT)
         unit.set_message_spacing(MESSAGE_SPACING)
-        self.identity = Identity(unit)
         self.measurements = Measurements(unit)
         self.status = Status(unit)
-
-    async def _async_setup(self) -> None:
-        """Read the identity once and make sure the layout is the known one."""
-        if not self.checks_layout:
-            return
-        await self.identity.async_update()
-        self.identity.check_layout()
-        await async_check_controls(self.modbus_unit)
 
     async def async_set_export_limit(self, percent: float) -> None:
         """Write the export limit percentage; the ECU applies it to all inverters."""

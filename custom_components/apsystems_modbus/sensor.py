@@ -14,21 +14,19 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     EntityCategory,
-    UnitOfApparentPower,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfFrequency,
     UnitOfPower,
-    UnitOfReactivePower,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from .const import CONF_INVERTERS, InverterConfig
-from .coordinator import ApsystemsConfigEntry, EcuCoordinator, EcuData
+from .const import CONF_INVERTERS
+from .coordinator import ApsystemsConfigEntry, EcuData
 from .ecu import MAX_CHANNELS, Inverter, OperatingState, channel_count
 from .entity import EcuEntity, InverterEntity
 from .lifetime import EnergyLedger
@@ -175,38 +173,6 @@ INVERTER_SENSORS: tuple[InverterSensorDescription, ...] = (
         value_fn=lambda inverter: inverter.measurements.temperature,
     ),
     InverterSensorDescription(
-        key="apparent_power",
-        translation_key="apparent_power",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        device_class=SensorDeviceClass.APPARENT_POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
-        suggested_display_precision=0,
-        entity_registry_enabled_default=False,
-        value_fn=lambda inverter: inverter.measurements.apparent_power,
-    ),
-    InverterSensorDescription(
-        key="reactive_power",
-        translation_key="reactive_power",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        device_class=SensorDeviceClass.REACTIVE_POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
-        suggested_display_precision=0,
-        entity_registry_enabled_default=False,
-        value_fn=lambda inverter: inverter.measurements.reactive_power,
-    ),
-    InverterSensorDescription(
-        key="power_factor",
-        translation_key="power_factor",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        device_class=SensorDeviceClass.POWER_FACTOR,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        entity_registry_enabled_default=False,
-        value_fn=lambda inverter: inverter.measurements.power_factor,
-    ),
-    InverterSensorDescription(
         key="status",
         translation_key="status",
         device_class=SensorDeviceClass.ENUM,
@@ -331,8 +297,10 @@ async def async_setup_entry(
     for item in entry.data[CONF_INVERTERS]:
         channels = channel_count(item["model"])
         entities.extend(
-            InverterSensor(coordinator, item, description, channels)
+            InverterSensor(coordinator, item, description)
             for description in INVERTER_SENSORS
+            # Only the panels the model has.
+            if description.channel <= channels
         )
         entities.append(
             InverterEnergyTodaySensor(coordinator, item, INVERTER_ENERGY_TODAY)
@@ -367,18 +335,6 @@ class InverterSensor(InverterEntity, SensorEntity):
     """A value of one inverter."""
 
     entity_description: InverterSensorDescription
-
-    def __init__(
-        self,
-        coordinator: EcuCoordinator,
-        item: InverterConfig,
-        description: InverterSensorDescription,
-        channels: int,
-    ) -> None:
-        """Enable DC channel sensors only for channels the model has."""
-        super().__init__(coordinator, item, description)
-        if description.channel > channels:
-            self._attr_entity_registry_enabled_default = False
 
     @property
     def native_value(self) -> StateType:

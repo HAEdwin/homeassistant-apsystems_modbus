@@ -18,7 +18,7 @@ TO_REDACT = {CONF_HOST, CONF_MAC, CONF_ECU_ID, CONF_SERIAL_NUMBER}
 
 def _component_values(inverter: Inverter) -> dict[str, Any]:
     values: dict[str, Any] = {}
-    for name in ("identity", "measurements", "status"):
+    for name in ("measurements", "status"):
         component = getattr(inverter, name)
         values[name] = {
             field: getattr(component, field) for field in component.declared_fields

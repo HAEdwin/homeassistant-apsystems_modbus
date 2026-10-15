@@ -842,3 +842,42 @@ async def test_an_old_poll_interval_option_is_ignored(
     )
     await setup_entry(hass, entry)
     assert_next_poll_after_a_round(entry.runtime_data)
+
+
+async def test_each_poll_asks_the_full_timeout_again(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    unit = mock_ecu.for_unit(1)
+
+    # A reconfigure probes the same link with a short timeout and is closed
+    # without a reload.
+    unit.require_timeout(5.0)
+    await coordinator.async_refresh()
+
+    assert unit.required_timeout == 60.0
+
+
+async def test_an_unanswered_write_ends_the_cycle(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    read = coordinator._async_read
+
+    async def read_then_write_times_out(*args: Any, **kwargs: Any) -> Any:
+        report = await read(*args, **kwargs)
+        coordinator.link_busy = True  # a write slotted in went unanswered
+        return report
+
+    with patch.object(coordinator, "_async_read", read_then_write_times_out):
+        await coordinator.async_refresh()
+
+    assert len(coordinator.data.available) == 1
+    assert coordinator.data.ended_in_timeout
+    assert coordinator.link_busy is False  # the link was opened fresh

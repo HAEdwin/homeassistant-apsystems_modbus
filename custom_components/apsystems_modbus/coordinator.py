@@ -32,7 +32,7 @@ from .const import (
     SETTLE_PER_INVERTER,
     VALUE_MAX_AGE,
 )
-from .ecu import Inverter
+from .ecu import REQUEST_TIMEOUT, Inverter
 from .lifetime import MAX_DAILY_WH, EnergyLedger, ecu_day
 from .power_limit import PowerLimit, store_for
 
@@ -135,6 +135,11 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         self.ledger = ledger
         self.lead = lead
         self.write_lock = asyncio.Lock()
+        self.link_busy = False
+        """The last request went unanswered, so the ECU may still work on it.
+
+        Cleared when the link is opened fresh. A write waits until then.
+        """
         self.ecu_device_id: str | None = None
         """Device registry id of the ECU, set once the device is registered."""
         self.serials: dict[int, str] = {
@@ -173,6 +178,13 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
     async def _async_update_data(self) -> EcuData:
         data = EcuData()
         started = monotonic()
+        # A probe of the config flow on the same link may have lowered the
+        # timeout. The ECU needs the full time.
+        self.lead.modbus_unit.require_timeout(REQUEST_TIMEOUT)
+        if self.link_busy:
+            # A write went unanswered since the last poll: start afresh.
+            async with self.write_lock:
+                await self._async_drop_link()
         self._reconnected = False
         limit_done = False
         lead = self.lead.unit_id
@@ -185,6 +197,11 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 # has had its turn by then, since the limit is read from it.
                 await self.power_limit.async_after_poll(data)
                 limit_done = True
+            if self.link_busy:
+                # A write went unanswered: the ECU still works on it.
+                data.ended_in_timeout = True
+                _LOGGER.debug("A write did not answer; units %s wait", waiting)
+                break
             if monotonic() - started >= POLL_BUDGET:
                 _LOGGER.debug("Poll budget used up; units %s wait", waiting)
                 break
@@ -247,6 +264,9 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             async with self.write_lock:
                 try:
                     await inverter.async_poll((name,), report)
+                except ModbusTimeoutError:
+                    self.link_busy = True
+                    raise
                 except ModbusConnectionError as err:
                     # A restart of the ECU leaves the open connection dead,
                     # so the first request after it fails even when the ECU
@@ -259,6 +279,8 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                     _LOGGER.debug("Connection lost (%s); reconnecting", err)
                     await self._async_drop_link()
                     await inverter.async_poll((name,), report)
+                if isinstance(report.failed.get(name), ModbusTimeoutError):
+                    self.link_busy = True
         return report
 
     def _blocks_for(self, unit_id: int) -> tuple[str, ...]:
@@ -395,8 +417,10 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 "and that Modbus is on in EMA Manager (Local Access)"
             )
         self._plan_next_poll()
-        # A link that stopped answering is opened fresh next time.
-        await self._async_drop_link()
+        # A link that stopped answering is opened fresh next time. Under
+        # write_lock, so a write that is under way is not cut off.
+        async with self.write_lock:
+            await self._async_drop_link()
 
     def _plan_next_poll(self) -> None:
         """Poll next just after the coming ECU round."""
@@ -433,6 +457,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
 
     async def _async_drop_link(self) -> None:
         """Close the shared link; the next request opens a new one."""
+        self.link_busy = False
         try:
             await self.lead.modbus_unit.disconnect()
         except ModbusError as err:
@@ -508,8 +533,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
             for unit, value in snapshot.items()
             if self._snapshot.get(unit) != value
         }
-        changed = bool(fresh)
-        if changed or self._last_change is None:
+        if fresh or self._last_change is None:
             self._last_change = dt_util.utcnow()
         self._snapshot.update(snapshot)
         data.last_change = self._last_change

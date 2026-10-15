@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 import logging
+from unittest.mock import AsyncMock, patch
 
 from freezegun.api import FrozenDateTimeFactory
-from modbus_connection import ModbusConnectionError, ModbusTimeoutError
+from modbus_connection import ModbusConnectionError, ModbusError, ModbusTimeoutError
 from modbus_connection.mock import MockModbusConnection, MockModbusUnit, WriteEvent
 import pytest
 
@@ -17,7 +18,7 @@ from homeassistant.components.number import (
     DOMAIN as NUMBER_DOMAIN,
     SERVICE_SET_VALUE,
 )
-from homeassistant.const import ATTR_ENTITY_ID, STATE_UNKNOWN, EntityCategory
+from homeassistant.const import ATTR_ENTITY_ID, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
@@ -394,7 +395,7 @@ async def test_pending_and_same_value_again_writes_now(
 ) -> None:
     await setup_entry(hass, mock_config_entry)
     unit = mock_ecu.for_unit(1)
-    unit.fail_write(EXPORT_LIMIT_ADDRESS, ModbusTimeoutError())
+    unit.fail_write(EXPORT_LIMIT_ADDRESS, ModbusConnectionError("dropped"))
     with pytest.raises(HomeAssistantError):
         await set_limit(hass, 30)
     unit.fail_write(EXPORT_LIMIT_ADDRESS, None)
@@ -402,6 +403,30 @@ async def test_pending_and_same_value_again_writes_now(
 
     await set_limit(hass, 30)
 
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert attributes_of(hass)["pending"] is False
+
+
+async def test_no_write_while_the_ecu_works_on_an_unanswered_request(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    unit = mock_ecu.for_unit(1)
+    unit.fail_write(EXPORT_LIMIT_ADDRESS, ModbusTimeoutError())
+    with pytest.raises(HomeAssistantError):
+        await set_limit(hass, 30)
+    unit.fail_write(EXPORT_LIMIT_ADDRESS, None)
+    writes = record_writes(unit)
+
+    # Trying again at once would queue up behind the unanswered write.
+    with pytest.raises(HomeAssistantError):
+        await set_limit(hass, 30)
+    assert writes == []
+
+    # The next poll starts on a fresh link and writes the choice.
+    await coordinator.async_refresh()
     assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
     assert attributes_of(hass)["pending"] is False
 
@@ -478,6 +503,71 @@ async def test_restore_happens_at_most_every_ten_minutes(
     await coordinator.async_refresh()
     await coordinator.async_refresh()
     assert len(writes) == 4
+
+
+async def test_failed_corrective_writes_stop_after_three(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
+    unit = mock_ecu.for_unit(1)
+    set_ecu(unit, 50, 1)  # The ECU moved away from the choice.
+
+    # It answers reads but refuses every write.
+    write = AsyncMock(side_effect=ModbusError("refused"))
+    with patch.object(coordinator.power_limit, "_async_write", write):
+        for _ in range(10):
+            await coordinator.async_refresh()
+            freezer.tick(REWRITE_INTERVAL + timedelta(seconds=1))
+
+    assert write.await_count == 3
+    assert "no more writes until the limit is chosen again" in caplog.text
+
+
+async def test_unanswered_corrective_writes_keep_trying(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
+    set_ecu(mock_ecu.for_unit(1), 50, 1)
+
+    # A busy ECU is no refusal: the choice is not given up.
+    write = AsyncMock(side_effect=ModbusTimeoutError())
+    with patch.object(coordinator.power_limit, "_async_write", write):
+        for _ in range(6):
+            await coordinator.async_refresh()
+            freezer.tick(REWRITE_INTERVAL + timedelta(seconds=1))
+
+    assert write.await_count > 3
+
+
+async def test_no_correction_while_a_change_is_being_written(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
+    unit = mock_ecu.for_unit(1)
+    writes = record_writes(unit)
+    set_ecu(unit, 50, 1)
+    await coordinator.async_refresh()
+
+    # A new choice is being written while this poll reads the old value.
+    async with coordinator.power_limit._lock:
+        await coordinator.async_refresh()
+    assert writes == []
+
+    # Afterwards the next poll judges again.
+    await coordinator.async_refresh()
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
 
 
 async def test_a_stubborn_ecu_is_not_written_over_and_over(
@@ -655,7 +745,7 @@ async def test_effective_limit(
     unit = mock_ecu.for_unit(1)
     unit.holding[EXPORT_LIMIT_ADDRESS] = percent_raw
     unit.holding[EXPORT_LIMIT_ENABLED_ADDRESS] = enabled_raw
-    inverter = Inverter(unit, 1, checks_layout=False)
+    inverter = Inverter(unit, 1)
     await inverter.async_poll(("measurements",))
 
     assert effective_limit(inverter.measurements) == expected
@@ -747,6 +837,44 @@ async def test_removal_without_a_limit_leaves_the_ecu_alone(
 
     assert unit.read_events == []
     assert writes == []
+    assert not notifications(hass)
+
+
+async def test_removal_at_100_releases_a_change_that_did_not_arrive(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 30)
+    unit = mock_ecu.for_unit(1)
+    unit.fail_write(EXPORT_LIMIT_ADDRESS, ModbusConnectionError("dropped"))
+    with pytest.raises(HomeAssistantError):
+        await set_limit(hass, 100)
+    unit.fail_write(EXPORT_LIMIT_ADDRESS, None)
+    writes = record_writes(unit)
+
+    await hass.config_entries.async_remove(mock_config_entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    # The ECU still limits at 30 %: the choice of 100 is completed.
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 1000), (EXPORT_LIMIT_ENABLED_ADDRESS, 0)]
+    assert not notifications(hass)
+
+
+async def test_removal_at_100_without_an_answer_is_quiet(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 100)
+    for unit_id in (1, 2):
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+
+    await hass.config_entries.async_remove(mock_config_entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
     assert not notifications(hass)
 
 
@@ -1717,26 +1845,6 @@ async def test_removal_notice_is_in_the_users_language(
 
     (notice,) = notifications(hass).values()
     assert notice["message"].startswith(opening)
-
-
-async def test_technical_sensors_are_diagnostic(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    await setup_entry(hass, mock_config_entry)
-    registry = er.async_get(hass)
-    for entity_id in (
-        "sensor.inverter_703000000002_ac_voltage",
-        "sensor.inverter_703000000002_panel_1_power",
-        "sensor.inverter_703000000002_temperature",
-    ):
-        assert (
-            registry.async_get(entity_id).entity_category is EntityCategory.DIAGNOSTIC
-        )
-    assert (
-        registry.async_get("sensor.inverter_703000000002_power").entity_category is None
-    )
 
 
 async def test_reload_clears_the_installation_power_notice(

@@ -48,7 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
         for item in entry.data[CONF_INVERTERS]:
             unit_id = item[CONF_UNIT_ID]
             unit = async_get_unit(hass, entry, params, unit_id)
-            inverters[unit_id] = Inverter(unit, unit_id, checks_layout=False)
+            inverters[unit_id] = Inverter(unit, unit_id)
     except HomeAssistantError as err:
         raise ConfigEntryError(
             translation_domain=DOMAIN,
@@ -108,18 +108,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
 async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -> None:
     """Release a power limit this integration set, so the inverters are not left limited.
 
-    A limit set by someone else, such as the installer, is left alone, and
-    without a limit of its own the ECU is not contacted at all. If the limit
-    could not be checked or released, the user is told, because nothing else
-    would release it any more. The stored choice goes too, so adding the ECU
-    again starts without a limit.
+    Without a choice of its own the ECU is not contacted at all, so a limit
+    set by someone else, such as the installer, is then left alone. At 100 the
+    ECU is still checked, since a change to 100 may not have arrived yet. If a
+    limit below 100 could not be checked or released, the user is told,
+    because nothing else would release it any more. The stored choice goes
+    too, so adding the ECU again starts without a limit.
     """
     store = store_for(hass, entry.entry_id)
     desired = stored_choice(await store.async_load())
     await store.async_remove()
     ir.async_delete_issue(hass, DOMAIN, issue_id_for(entry.entry_id))
     ir.async_delete_issue(hass, DOMAIN, new_address_issue_id(entry.entry_id))
-    if desired is None or desired >= NO_LIMIT:
+    if desired is None:
         return
     try:
         released = await _async_release_limit(hass, entry)
@@ -129,7 +130,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
         )
         _LOGGER.debug("Releasing the power limit failed: %s", err)
         released = False
-    if released:
+    if released or desired >= NO_LIMIT:
         return
     # Notifications have no translation keys of their own, so the text comes
     # from this integration's translations in the user's language.
@@ -163,7 +164,7 @@ async def _async_release_limit(
     unit_ids = sorted(item[CONF_UNIT_ID] for item in entry.data[CONF_INVERTERS])
     for unit_id in unit_ids[:RELEASE_ATTEMPTS]:
         async with async_get_temporary_unit(hass, params, unit_id) as unit:
-            inverter = Inverter(unit, unit_id, checks_layout=False)
+            inverter = Inverter(unit, unit_id)
             try:
                 await inverter.measurements.async_update()
             except ModbusTimeoutError:

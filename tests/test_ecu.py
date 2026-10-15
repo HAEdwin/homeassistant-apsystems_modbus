@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.apsystems_modbus.ecu import (
     GRID_CONNECTION_ADDRESS,
+    Identity,
     Inverter,
     InverterEvent,
     OperatingState,
@@ -15,16 +16,17 @@ from custom_components.apsystems_modbus.ecu import (
     channel_count,
 )
 
-from .conftest import set_float32
+from .conftest import add_inverter, set_float32
 
 
 async def test_identity(mock_ecu: MockModbusConnection) -> None:
-    inverter = Inverter(mock_ecu.for_unit(1), 1)
-    await inverter.async_ensure_setup()
+    identity = Identity(mock_ecu.for_unit(1))
+    await identity.async_update()
+    identity.check_layout()
 
-    assert inverter.identity.manufacturer == "APsystems"
-    assert inverter.identity.model == "DS3"
-    assert inverter.identity.serial_number == "704000000001"
+    assert identity.manufacturer == "APsystems"
+    assert identity.model == "DS3"
+    assert identity.serial_number == "704000000001"
 
 
 async def test_measurements_by_day(mock_ecu: MockModbusConnection) -> None:
@@ -126,10 +128,24 @@ async def test_poll_uses_two_reads(mock_ecu: MockModbusConnection) -> None:
 async def test_unsupported_layout(mock_ecu: MockModbusConnection) -> None:
     unit = mock_ecu.for_unit(1)
     unit.holding[40070] = 103  # a three-phase model instead of 101
-    inverter = Inverter(unit, 1)
+    identity = Identity(unit)
+    await identity.async_update()
 
     with pytest.raises(UnsupportedLayoutError, match="40070"):
-        await inverter.async_ensure_setup()
+        identity.check_layout()
+
+
+@pytest.mark.parametrize("serial", ["/../../configuration.yaml", "7040.0001", ""])
+async def test_serial_number_must_be_letters_and_digits(
+    mock_ecu: MockModbusConnection, serial: str
+) -> None:
+    # The serial number names the file of the stored totals.
+    add_inverter(mock_ecu, 9, serial)
+    identity = Identity(mock_ecu.for_unit(9))
+    await identity.async_update()
+
+    with pytest.raises(UnsupportedLayoutError, match="serial number"):
+        identity.check_layout()
 
 
 async def test_timeout_propagates(mock_ecu: MockModbusConnection) -> None:
@@ -189,7 +205,15 @@ async def test_write_export_limit_out_of_range(
 
 @pytest.mark.parametrize(
     ("model", "expected"),
-    [("DS3", 2), ("DS3-L", 2), ("YC600", 2), ("QT2", 4), ("DS3D", 4), (None, 2)],
+    [
+        ("DS3", 2),
+        ("DS3-L", 2),
+        ("YC600", 2),
+        ("QT2", 4),
+        ("DS3D", 4),
+        ("NEW1", 4),  # an unknown model keeps every panel
+        (None, 4),
+    ],
 )
 def test_channel_count(model: str | None, expected: int) -> None:
     assert channel_count(model) == expected

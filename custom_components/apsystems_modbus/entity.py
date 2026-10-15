@@ -57,8 +57,8 @@ class EcuEntity(CoordinatorEntity[EcuCoordinator]):
         super().__init__(coordinator)
         self.entity_description = description
         entry = coordinator.config_entry
-        # Prefixed, because without an ECU id the entry is identified by the
-        # first inverter's serial number, which that inverter's entities use too.
+        # Prefixed, because the entry is identified by the first inverter's
+        # serial number, which that inverter's entities use too.
         self._attr_unique_id = f"ecu-{entry.unique_id}-{description.key}"
         self._attr_device_info = ecu_device_info(entry)
 

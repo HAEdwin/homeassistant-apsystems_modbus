@@ -7,7 +7,7 @@ the integration. It never writes and never reads past 40261 (the ECU-R fills
 40262-40269 with 0xDEADBEEF and stops answering at 40270).
 
 Usage:
-    python3 dump_registers.py --host 192.0.2.10 --units 1 2 --probe-unit 9 --out .
+    python3 dump_registers.py --host 192.0.2.10 --units 1 2 --out .
 
 Before running:
   * Run it only while the ECU is answering normally (no timeouts in the
@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 import socket
 import struct
@@ -32,9 +33,7 @@ FIRST_REGISTER = 40000
 LAST_REGISTER = 40261  # inclusive, never read beyond this
 BLOCK_SIZES = (125, 60, 30)  # tried in this order on the first unit
 PAUSE = 1.0  # seconds between requests
-TIMEOUT = float(
-    __import__("os").environ.get("DUMP_TIMEOUT", "15")
-)  # seconds per request
+TIMEOUT = float(os.environ.get("DUMP_TIMEOUT", "15"))  # seconds per request
 
 EXCEPTION_NAMES = {
     1: "illegal function",
