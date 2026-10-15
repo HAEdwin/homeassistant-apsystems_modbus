@@ -10,6 +10,8 @@
 Fully local Home Assistant integration for solar panels with APsystems
 microinverters and an ECU, over Modbus TCP.
 
+<img src="images/dashboard.png" alt="Dashboard with solar power, energy, power limit and every microinverter down to each panel">
+
 Features:
 
 - **One device for the whole system (the ECU)** with current solar power,
@@ -76,6 +78,19 @@ Devices & services*, or add it yourself:
 The dialog explains every field. Leave the inverter addresses empty to find
 the inverters automatically.
 
+You get one device for the ECU and one device per inverter.
+
+<table>
+  <tr>
+    <th>Devices</th>
+    <th>One inverter</th>
+  </tr>
+  <tr>
+    <td valign="top"><img src="images/devices.png" alt="The ECU and its eight inverters as devices" width="420"></td>
+    <td valign="top"><img src="images/inverter.png" alt="Inverter device with power, energy today and values per panel" width="300"></td>
+  </tr>
+</table>
+
 Under *Configure* you can enter the installation power, correct the lifetime
 energy and reset the peak power. A correction shows up once as production in
 that hour. Fix that under *Settings → Tools → Statistics*.
@@ -100,6 +115,8 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
   notice under *Settings → Repairs* asks you to check the installation power.
 - If an inverter stays limited, set the limit to 100. If that does not help,
   switch the ECU off for a minute.
+
+<img src="images/ecu.png" alt="ECU device with the power limit in percent and in kW" width="360">
 
 Example: no export at negative feed-in prices. Replace the entity IDs with
 yours.
