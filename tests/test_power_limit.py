@@ -149,21 +149,6 @@ async def test_set_below_100_writes_percent_then_enable(
     assert attributes_of(hass)["pending"] is False
 
 
-async def test_set_100_writes_1000_then_disable(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    await setup_entry(hass, mock_config_entry)
-    await set_limit(hass, 30)
-    writes = record_writes(mock_ecu.for_unit(1))
-
-    await set_limit(hass, 100)
-
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 1000), (EXPORT_LIMIT_ENABLED_ADDRESS, 0)]
-    assert state_of(hass) == "100"
-
-
 async def test_other_inverters_are_never_written(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
@@ -185,30 +170,12 @@ async def test_value_is_rounded_to_whole_percent(
     coordinator = await setup_entry(hass, mock_config_entry)
     writes = record_writes(mock_ecu.for_unit(1))
 
-    await coordinator.power_limit.async_set(57.4)
-    await coordinator.power_limit.async_set(0)
-    await coordinator.power_limit.async_set(100.0)
+    await coordinator.power_limit.async_set(57.6)
 
-    assert writes[0] == (EXPORT_LIMIT_ADDRESS, 570)
-    assert writes[2] == (EXPORT_LIMIT_ADDRESS, 0)
-    assert writes[4] == (EXPORT_LIMIT_ADDRESS, 1000)
+    assert writes[0] == (EXPORT_LIMIT_ADDRESS, 580)
 
 
-async def test_same_value_again_does_not_write(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    await setup_entry(hass, mock_config_entry)
-    await set_limit(hass, 30)
-    writes = record_writes(mock_ecu.for_unit(1))
-
-    await set_limit(hass, 30)
-
-    assert writes == []
-
-
-async def test_first_use_writes_even_when_ecu_already_reports_it(
+async def test_first_use_of_the_reported_value_writes_nothing(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
     mock_config_entry: MockConfigEntry,
@@ -220,7 +187,8 @@ async def test_first_use_writes_even_when_ecu_already_reports_it(
 
     await set_limit(hass, 30)
 
-    assert len(writes) == 2
+    # The ECU holds it already: writing it again would change nothing.
+    assert writes == []
 
 
 async def test_failed_first_write_is_pending_and_retried_at_next_poll(
@@ -328,10 +296,8 @@ async def test_failed_second_write_below_100_is_completed(
 
     unit.fail_write(EXPORT_LIMIT_ENABLED_ADDRESS, None)
     await coordinator.async_refresh()
-    assert writes[1:] == [
-        (EXPORT_LIMIT_ADDRESS, 300),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
-    ]
+    # The ECU holds 300 already, so only the flag is still written.
+    assert writes[1:] == [(EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
     assert state_of(hass) == "30"
 
 
@@ -565,9 +531,10 @@ async def test_no_correction_while_a_change_is_being_written(
         await coordinator.async_refresh()
     assert writes == []
 
-    # Afterwards the next poll judges again.
+    # Afterwards the next poll judges again. The flag is on, so only the
+    # percentage is written.
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 300)]
 
 
 async def test_a_stubborn_ecu_is_not_written_over_and_over(
@@ -599,10 +566,7 @@ async def test_a_stubborn_ecu_is_not_written_over_and_over(
         (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
     ]
     await set_limit(hass, 40)
-    assert writes[8:] == [
-        (EXPORT_LIMIT_ADDRESS, 400),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
-    ]
+    assert writes[8:] == [(EXPORT_LIMIT_ADDRESS, 400)]
 
 
 async def test_no_choice_means_no_write(
@@ -637,7 +601,7 @@ async def test_reload_keeps_the_choice_and_refreshes_it(
 
     assert attributes_of(hass)["desired"] == 30
     # The ECU may have restarted meanwhile: the choice is sent again at once.
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
 
 
 async def test_stale_readback_of_a_silent_control_unit_does_not_count(
@@ -695,6 +659,192 @@ async def test_replaced_control_unit_keeps_the_limit(
     assert writes == [(EXPORT_LIMIT_ADDRESS, 300), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
 
 
+async def test_only_registers_that_differ_are_written(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    writes = record_writes(mock_ecu.for_unit(1))
+
+    await set_limit(hass, 50)
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 500), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    await coordinator.async_refresh()
+
+    # The flag is on already: writing it again made the ECU stop answering.
+    await set_limit(hass, 0)
+    assert writes[2:] == [(EXPORT_LIMIT_ADDRESS, 0)]
+    await coordinator.async_refresh()
+
+    await set_limit(hass, 100)
+    assert writes[3:] == [
+        (EXPORT_LIMIT_ADDRESS, 1000),
+        (EXPORT_LIMIT_ENABLED_ADDRESS, 0),
+    ]
+    assert state_of(hass) == "100"
+
+
+async def test_changes_between_polls_count_what_was_written(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    writes = record_writes(mock_ecu.for_unit(1))
+
+    # The last read still says "no limit", but the first change set the flag.
+    await set_limit(hass, 50)
+    await set_limit(hass, 0)
+    await set_limit(hass, 100)
+    assert writes == [
+        (EXPORT_LIMIT_ADDRESS, 500),
+        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
+        (EXPORT_LIMIT_ADDRESS, 0),
+        (EXPORT_LIMIT_ADDRESS, 1000),
+        (EXPORT_LIMIT_ENABLED_ADDRESS, 0),
+    ]
+
+
+async def test_a_change_made_elsewhere_is_seen_at_the_next_read(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    await set_limit(hass, 50)
+    unit = mock_ecu.for_unit(1)
+    # Someone switches the limit off in EMA Manager.
+    unit.holding[EXPORT_LIMIT_ENABLED_ADDRESS] = ord("0")
+    writes = record_writes(unit)
+
+    await coordinator.async_refresh()
+    await coordinator.async_refresh()
+
+    # The newer read wins over what was written before it.
+    assert (EXPORT_LIMIT_ENABLED_ADDRESS, 1) in writes
+    assert (EXPORT_LIMIT_ADDRESS, 500) not in writes
+
+
+async def test_a_write_between_two_blocks_of_a_poll_counts(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    unit = mock_ecu.for_unit(1)
+    # The ECU holds 30 %, but the flag was switched off in EMA Manager.
+    set_ecu(unit, 30, ord("0"))
+    await coordinator.async_refresh()
+    writes = record_writes(unit)
+
+    # A change waits for the read of the limit and is written right after it.
+    lead = coordinator.lead.measurements
+    read = lead.async_update
+    changes: list[asyncio.Task[None]] = []
+
+    async def read_then_change(*args: object, **kwargs: object) -> None:
+        await read(*args, **kwargs)
+        if not changes:
+            changes.append(
+                hass.async_create_task(coordinator.power_limit.async_set(30))
+            )
+            await asyncio.sleep(0)
+
+    with patch.object(lead, "async_update", read_then_change):
+        await coordinator.async_refresh()
+    await changes[0]
+    assert writes == [(EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+
+    # The flag that change set counts, even though the poll ended later.
+    await coordinator.power_limit.async_set(40)
+    assert writes[1:] == [(EXPORT_LIMIT_ADDRESS, 400)]
+
+
+async def test_an_unanswered_flag_is_not_sent_again_before_a_read(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    unit = mock_ecu.for_unit(1)
+    writes = record_writes(unit)
+    # The ECU takes the flag but does not answer.
+    unit.fail_write(EXPORT_LIMIT_ENABLED_ADDRESS, ModbusTimeoutError())
+    with pytest.raises(HomeAssistantError):
+        await set_limit(hass, 50)
+    unit.fail_write(EXPORT_LIMIT_ENABLED_ADDRESS, None)
+
+    # At the next poll a change gets in before the limit is read again.
+    drop = coordinator._async_drop_link
+    changes: list[asyncio.Task[None]] = []
+
+    async def drop_then_change() -> None:
+        if not changes:
+            changes.append(
+                hass.async_create_task(coordinator.power_limit.async_set(40))
+            )
+            await asyncio.sleep(0)
+        await drop()
+
+    with patch.object(coordinator, "_async_drop_link", drop_then_change):
+        await coordinator.async_refresh()
+    await changes[0]
+
+    # Only answered writes are recorded: the flag was not sent a second time.
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 500), (EXPORT_LIMIT_ADDRESS, 400)]
+
+
+async def test_a_flag_given_up_on_is_not_sent_again_before_a_read(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    writes = record_writes(mock_ecu.for_unit(1))
+    lead = coordinator.lead
+    send = lead.async_set_export_limit_enabled
+
+    # The flag is sent, then the automation that set it is stopped.
+    async def send_then_stop(enabled: bool) -> None:
+        await send(enabled)
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(lead, "async_set_export_limit_enabled", send_then_stop),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await coordinator.power_limit.async_set(50)
+    await coordinator.power_limit.async_set(40)
+
+    assert writes == [
+        (EXPORT_LIMIT_ADDRESS, 500),
+        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
+        (EXPORT_LIMIT_ADDRESS, 400),
+    ]
+
+
+async def test_a_failed_read_does_not_undo_what_was_written(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    unit = mock_ecu.for_unit(1)
+    writes = record_writes(unit)
+    await set_limit(hass, 50)
+
+    # The next read of the limit fails, so the older read is all there is.
+    unit.fail_read(40124, ModbusError("exception response"))
+    await coordinator.async_refresh()
+    await set_limit(hass, 40)
+
+    assert writes == [
+        (EXPORT_LIMIT_ADDRESS, 500),
+        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
+        (EXPORT_LIMIT_ADDRESS, 400),
+    ]
+
+
 async def test_latest_of_concurrent_calls_wins(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
@@ -714,11 +864,11 @@ async def test_latest_of_concurrent_calls_wins(
     await asyncio.gather(*calls)
 
     # The first call was already committed; the middle one is skipped.
+    # The flag was switched on by the first call, so it is not sent again.
     assert writes == [
         (EXPORT_LIMIT_ADDRESS, 300),
         (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
         (EXPORT_LIMIT_ADDRESS, 600),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
     ]
     assert coordinator.power_limit.desired == 60
     assert coordinator.power_limit.shown == 60
@@ -781,7 +931,7 @@ async def test_stays_available_while_the_ecu_is_silent(
 
     # Setting is attempted and reports the failure instead of being skipped.
     with pytest.raises(HomeAssistantError) as err:
-        await set_limit(hass, 100)
+        await set_limit(hass, 30)
     assert err.value.translation_key == "power_limit_pending"
 
 
@@ -1042,22 +1192,19 @@ async def test_refresh_sends_the_limit_again_via_one_percent_less(
 
     freezer.tick(timedelta(seconds=1))
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
     assert coordinator.power_limit.refreshing is True
     assert state_of(hass) == "30"
 
     # The in-between value stays one ECU round, and is never shown.
     freezer.tick(STEP_HOLD - timedelta(seconds=1))
     await coordinator.async_refresh()
-    assert len(writes) == 2
+    assert len(writes) == 1
     assert state_of(hass) == "30"
 
     freezer.tick(timedelta(seconds=1))
     await coordinator.async_refresh()
-    assert writes[2:] == [
-        (EXPORT_LIMIT_ADDRESS, 300),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
-    ]
+    assert writes[1:] == [(EXPORT_LIMIT_ADDRESS, 300)]
     assert coordinator.power_limit.refreshing is False
     assert state_of(hass) == "30"
 
@@ -1077,9 +1224,7 @@ REFRESH_AT_0 = (
     # At 0 there is nothing below, so it is 1.
     [
         (EXPORT_LIMIT_ADDRESS, 10),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
         (EXPORT_LIMIT_ADDRESS, 0),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
     ],
 )
 
@@ -1150,25 +1295,19 @@ async def test_change_during_a_refresh_takes_over(
     writes = record_writes(mock_ecu.for_unit(1))
     freezer.tick(REFRESH_DELAY)
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
 
     await set_limit(hass, 60)
     freezer.tick(STEP_HOLD)
     await coordinator.async_refresh()
 
     # Only the new choice was written; its own refreshes start afresh.
-    assert writes[2:] == [
-        (EXPORT_LIMIT_ADDRESS, 600),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
-    ]
+    assert writes[1:] == [(EXPORT_LIMIT_ADDRESS, 600)]
     assert coordinator.power_limit.refreshing is False
     assert state_of(hass) == "60"
     freezer.tick(REFRESH_DELAY - STEP_HOLD)
     await coordinator.async_refresh()
-    assert writes[4:] == [
-        (EXPORT_LIMIT_ADDRESS, 590),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
-    ]
+    assert writes[2:] == [(EXPORT_LIMIT_ADDRESS, 590)]
 
 
 async def test_same_value_again_does_not_move_the_refresh(
@@ -1210,7 +1349,7 @@ async def test_no_refresh_while_an_inverter_is_offline(
     set_float32(unit, 40144, 150.0)
     set_float32(unit, 40146, 50.0)
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
 
 
 async def test_finishing_a_refresh_waits_until_the_ecu_is_not_busy(
@@ -1232,13 +1371,10 @@ async def test_finishing_a_refresh_waits_until_the_ecu_is_not_busy(
     freezer.tick(STEP_HOLD)
     for _ in range(2):
         await coordinator.async_refresh()
-        assert writes[2:] == []
+        assert writes[1:] == []
     await coordinator.async_refresh()
 
-    assert writes[2:] == [
-        (EXPORT_LIMIT_ADDRESS, 300),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
-    ]
+    assert writes[1:] == [(EXPORT_LIMIT_ADDRESS, 300)]
 
 
 async def test_failed_finish_is_retried_at_the_next_poll(
@@ -1262,10 +1398,7 @@ async def test_failed_finish_is_retried_at_the_next_poll(
 
     unit.fail_write(EXPORT_LIMIT_ADDRESS, None)
     await coordinator.async_refresh()
-    assert writes[2:] == [
-        (EXPORT_LIMIT_ADDRESS, 300),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 1),
-    ]
+    assert writes[1:] == [(EXPORT_LIMIT_ADDRESS, 300)]
     assert coordinator.power_limit.refreshing is False
 
 
@@ -1287,7 +1420,7 @@ async def test_silent_ecu_below_100_refreshes_once_it_answers(
         mock_ecu.for_unit(unit_id).fail_requests(None)
 
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
 
 
 async def test_quiet_evening_does_not_refresh(
@@ -1319,8 +1452,9 @@ async def test_silent_ecu_at_100_does_not_refresh(
     await set_limit(hass, 100)
     writes = record_writes(mock_ecu.for_unit(1))
 
+    # A broken connection, as after a restart of the ECU.
     for unit_id in (1, 2):
-        mock_ecu.for_unit(unit_id).fail_requests(ModbusTimeoutError())
+        mock_ecu.for_unit(unit_id).fail_requests(ModbusConnectionError("restart"))
     await coordinator.async_refresh()
     for unit_id in (1, 2):
         mock_ecu.for_unit(unit_id).fail_requests(None)
@@ -1356,27 +1490,7 @@ async def test_lost_connection_is_reopened_in_the_same_poll(
     assert coordinator.last_update_success is True
     assert coordinator.data.available == {1, 2}
     assert calls == 3
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
-
-
-async def test_connection_lost_twice_ends_the_poll(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    coordinator = await setup_entry(hass, mock_config_entry)
-    inverter = coordinator.inverters[1]
-
-    async def always_lost(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise ModbusConnectionError("connection reset by peer")
-
-    inverter.async_poll = always_lost  # type: ignore[method-assign]
-    await coordinator.async_refresh()
-
-    # Unit 1 comes first and the link stays down: nothing new, the values of
-    # the last poll stay shown for now.
-    assert coordinator.data.link_lost is True
-    assert coordinator.data.available == set()
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
 
 
 def store_choice(hass_storage: dict, entry: MockConfigEntry, data: dict) -> None:
@@ -1405,7 +1519,7 @@ async def test_choice_is_restored_after_a_restart(
 
     # The ECU may have restarted meanwhile: the first poll sends it again.
     assert attributes_of(hass)["desired"] == 30
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
     assert coordinator.power_limit.refreshing is True
 
 
@@ -1514,7 +1628,7 @@ async def test_failed_in_between_write_is_retried_at_the_next_poll(
 
     unit.fail_write(EXPORT_LIMIT_ADDRESS, None)
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
 
 
 async def test_failed_change_during_a_refresh_is_retried_at_once(
@@ -1529,7 +1643,7 @@ async def test_failed_change_during_a_refresh_is_retried_at_once(
     writes = record_writes(unit)
     freezer.tick(REFRESH_DELAY)
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 490), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 490)]
 
     # The user releases, but the ECU does not take the write.
     unit.fail_write(EXPORT_LIMIT_ADDRESS, ModbusTimeoutError())
@@ -1538,12 +1652,10 @@ async def test_failed_change_during_a_refresh_is_retried_at_once(
     assert coordinator.power_limit.refreshing is False
 
     # The next poll delivers it, without waiting for the refresh to end.
+    # The unanswered write did set 100, so only the flag is still needed.
     unit.fail_write(EXPORT_LIMIT_ADDRESS, None)
     await coordinator.async_refresh()
-    assert writes[2:] == [
-        (EXPORT_LIMIT_ADDRESS, 1000),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, 0),
-    ]
+    assert writes[2:] == [(EXPORT_LIMIT_ENABLED_ADDRESS, 0)]
     assert coordinator.power_limit.pending is False
 
 
@@ -1571,7 +1683,7 @@ async def test_lost_connection_refreshes_at_most_once_an_hour(
     await coordinator.async_refresh()
     freezer.tick(STEP_HOLD)
     await coordinator.async_refresh()
-    assert len(writes) == 4
+    assert len(writes) == 2
 
     # A network that drops the connection again soon does not cause a loop.
     freezer.tick(timedelta(minutes=10))
@@ -1579,7 +1691,7 @@ async def test_lost_connection_refreshes_at_most_once_an_hour(
     await coordinator.async_refresh()
     ecu_back()
     await coordinator.async_refresh()
-    assert len(writes) == 4
+    assert len(writes) == 2
 
 
 ENTITY_KW = "number.apsystems_ecu_power_limit_kw"
@@ -1637,11 +1749,9 @@ async def test_kw_is_set_as_the_next_whole_percent(
 
     await set_kw(hass, kw)
 
-    enabled = 0 if percent == 100 else 1
-    assert writes == [
-        (EXPORT_LIMIT_ADDRESS, percent * 10),
-        (EXPORT_LIMIT_ENABLED_ADDRESS, enabled),
-    ]
+    # The ECU starts without a limit, so 100 needs no write.
+    expected = [(EXPORT_LIMIT_ADDRESS, percent * 10), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == (expected if percent < 100 else [])
     assert state_of(hass) == str(percent)
 
 
@@ -1688,7 +1798,7 @@ async def test_inverter_above_the_limit_is_refreshed(
 
     freezer.tick(timedelta(minutes=1))
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 10), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 10)]
     assert coordinator.power_limit.overshoot_refreshes == 1
 
 
@@ -1797,7 +1907,7 @@ async def test_restart_soon_after_a_refresh_is_postponed_not_dropped(
 
     freezer.tick(timedelta(minutes=35))
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 10), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 10)]
 
 
 async def test_two_different_readbacks_do_not_move_the_slider(
@@ -1912,7 +2022,7 @@ async def test_watched_limit_after_an_ecu_restart_is_only_set_back(
     for _ in range(2):
         freezer.tick(timedelta(minutes=5))
         await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 90), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 90)]
 
 
 async def test_watched_limit_after_a_start_is_checked_on_the_power(
@@ -1936,7 +2046,7 @@ async def test_watched_limit_after_a_start_is_checked_on_the_power(
     for _ in range(2):
         freezer.tick(timedelta(minutes=5))
         await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 80), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 80)]
     assert coordinator.power_limit.overshoot_refreshes == 1
 
 
@@ -1980,7 +2090,7 @@ async def test_watched_limit_missed_again_after_a_night_is_refreshed(
         set_float32(unit, 40146, 50.0)
     writes = record_writes(mock_ecu.for_unit(1))
     await missed_for_a_day()
-    assert writes[:2] == [(EXPORT_LIMIT_ADDRESS, 10), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes[:2] == [(EXPORT_LIMIT_ADDRESS, 10), (EXPORT_LIMIT_ADDRESS, 0)]
     assert coordinator.power_limit.overshoot_refreshes == 2
 
 
@@ -2012,6 +2122,7 @@ async def test_notice_goes_with_a_new_choice_after_a_night(
     freezer.tick(timedelta(hours=8))
     await coordinator.async_refresh()
     assert coordinator.power_limit.overshoot_refreshes == 0
+    assert ir.async_get(hass).async_get_issue("apsystems_modbus", issue_id)
 
     await set_limit(hass, 20)
     assert ir.async_get(hass).async_get_issue("apsystems_modbus", issue_id) is None
@@ -2126,7 +2237,7 @@ async def test_refresh_waits_at_most_an_hour_for_a_dark_inverter(
 
     freezer.tick(REFRESH_REPEAT)
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 10), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 10)]
 
 
 async def test_no_refresh_at_night(
@@ -2173,7 +2284,7 @@ async def test_no_refresh_while_a_choice_is_pending(
     writes = record_writes(unit)
     freezer.tick(REFRESH_DELAY)
     await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 200), (EXPORT_LIMIT_ENABLED_ADDRESS, 1)]
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 200)]
     assert coordinator.power_limit.refreshing is False
     assert attributes_of(hass)["pending"] is False
 

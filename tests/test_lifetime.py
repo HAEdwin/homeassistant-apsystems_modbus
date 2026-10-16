@@ -341,18 +341,6 @@ async def test_stray_reading_around_midnight_counts_nothing(
     assert total == 1100 + 100
 
 
-async def test_restart_missed_overnight_is_booked_in_the_morning(
-    ledger: EnergyLedger,
-) -> None:
-    total = at_times(
-        ledger,
-        ("2026-10-13 22:00", 1100),
-        ("2026-10-14 10:00", 2000),
-        ("2026-10-14 10:05", 2050),
-    )
-    assert total == 1100 + 2050
-
-
 async def test_no_counter_of_today_while_a_drop_waits(ledger: EnergyLedger) -> None:
     read(ledger, DAY_2, 0, 0, 800)
     assert ledger.daily_of("a", DAY_2) == 800

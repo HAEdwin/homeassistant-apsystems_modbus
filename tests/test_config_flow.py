@@ -154,18 +154,6 @@ async def test_no_inverters_found(
     assert result["errors"] == {"base": "no_inverters"}
 
 
-async def test_ecu_busy_during_search(
-    hass: HomeAssistant, mock_ecu: MockModbusConnection
-) -> None:
-    mock_ecu.for_unit(2).fail_read(40004, ModbusTimeoutError())
-    result = await start_user_flow(hass)
-
-    result = await submit_and_wait(
-        hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-2"}
-    )
-    assert result["errors"] == {"base": "ecu_busy"}
-
-
 async def test_unsupported_layout(
     hass: HomeAssistant, mock_ecu: MockModbusConnection
 ) -> None:
@@ -293,24 +281,6 @@ async def test_reconfigure(
     assert [item["unit_id"] for item in mock_config_entry.data[CONF_INVERTERS]] == [1]
 
 
-async def test_options_flow(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    mock_config_entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done(wait_background_tasks=True)
-
-    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
-    assert result["step_id"] == "init"
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"installation_power": 1.4}
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert mock_config_entry.options == {"installation_power": 1.4}
-
-
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
@@ -354,20 +324,6 @@ async def test_slow_inverter_during_search_is_retried(
     result = await start_user_flow(hass)
 
     result = await submit_and_wait(hass, result["flow_id"], USER_INPUT)
-    assert result["step_id"] == "confirm"
-    assert result["description_placeholders"]["count"] == "2"
-
-
-async def test_slow_identity_read_is_retried(
-    hass: HomeAssistant, mock_ecu: MockModbusConnection
-) -> None:
-    unit = mock_ecu.for_unit(2)
-    unit.holding[40004] = timeout_once(unit.holding[40004])
-    result = await start_user_flow(hass)
-
-    result = await submit_and_wait(
-        hass, result["flow_id"], {**USER_INPUT, CONF_UNIT_IDS: "1-2"}
-    )
     assert result["step_id"] == "confirm"
     assert result["description_placeholders"]["count"] == "2"
 

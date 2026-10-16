@@ -281,6 +281,14 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                     await inverter.async_poll((name,), report)
                 if isinstance(report.failed.get(name), ModbusTimeoutError):
                     self.link_busy = True
+                # The limit is in the measurements block. Still under
+                # write_lock, so no write slips in between.
+                if (
+                    inverter is self.lead
+                    and name == "measurements"
+                    and name in report.updated
+                ):
+                    self.power_limit.note_read()
         return report
 
     def _blocks_for(self, unit_id: int) -> tuple[str, ...]:

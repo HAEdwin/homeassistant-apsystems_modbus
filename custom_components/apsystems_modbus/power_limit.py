@@ -36,6 +36,9 @@ only the last one partly shows, as a failed poll. So:
   is easily overloaded.
   If two such refreshes do not help, the power is probably entered wrong:
   the user is told instead of the ECU being written over and over.
+* Only a register that differs from what the ECU holds is written. Setting
+  the flag again while it was on made the whole ECU stop answering, twice,
+  until it was switched off and on.
 
 Lock order: ``PowerLimit._lock`` first, then the coordinator's ``write_lock``
 for each register write. The coordinator holds ``write_lock`` only while it
@@ -47,7 +50,7 @@ between two reads without ``write_lock``. Calling it while holding
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -70,6 +73,9 @@ if TYPE_CHECKING:
     from .coordinator import EcuCoordinator, EcuData
 
 _LOGGER = logging.getLogger(__name__)
+
+UNANSWERED = (ModbusTimeoutError, asyncio.CancelledError)
+"""A write that ended this way may still have reached the ECU."""
 
 NO_LIMIT = MAX_EXPORT_LIMIT
 """The percentage that means "not limited"."""
@@ -183,6 +189,8 @@ class PowerLimit:
         self._refresh = _Refresh()
         self._last_written: datetime | None = None
         """When the chosen value last reached the ECU."""
+        self._written: dict[str, float | bool] = {}
+        """Per register the value written since the last read of ``control``."""
         self._over_last_poll: set[int] = set()
         self._ecu_was_silent = False
         self._lock = asyncio.Lock()
@@ -239,6 +247,13 @@ class PowerLimit:
         answers, unless the power shows a missed limit.
         """
         self._ecu_was_silent = True
+
+    def note_read(self) -> None:
+        """Record that the limit registers were just read through ``control``.
+
+        From now on that read says what the ECU holds, not earlier writes.
+        """
+        self._written.clear()
 
     async def async_set(self, value: float) -> None:
         """Apply a limit chosen by the user.
@@ -298,15 +313,52 @@ class PowerLimit:
         it. ``show`` makes the written value the shown one; the in-between
         value of a refresh is not shown. Nothing is written while the ECU may
         still work on an unanswered request: it would only queue up behind it.
+
+        A register is only written when the ECU holds another value. Setting
+        the flag again while it was on made the ECU stop answering altogether,
+        and a change of the percentage alone needs no flag.
         """
-        async with self._ready_link():
-            await self.control.async_set_export_limit(percent)
-        async with self._ready_link():
-            await self.control.async_set_export_limit_enabled(percent < NO_LIMIT)
+        measurements = self.control.measurements
+        await self._async_put(
+            "percent",
+            percent,
+            measurements.export_limit,
+            self.control.async_set_export_limit,
+        )
+        await self._async_put(
+            "enabled",
+            percent < NO_LIMIT,
+            measurements.export_limit_enabled,
+            self.control.async_set_export_limit_enabled,
+        )
         # What the inverters delivered before this write says nothing any more.
         self._over_last_poll = set()
         if show:
             self._adopt(percent)
+
+    async def _async_put(
+        self,
+        name: str,
+        value: float | bool,
+        reported: float | bool | None,
+        write: Callable[[Any], Awaitable[None]],
+    ) -> None:
+        """Write one register, unless the ECU holds ``value`` already.
+
+        What the ECU holds is the last read, or a write made after it. An
+        unknown value is always written. A write without an answer, or one
+        given up on, may still have arrived, so it is not sent again before
+        the next read.
+        """
+        if self._written.get(name, reported) == value:
+            return
+        async with self._ready_link():
+            try:
+                await write(value)
+            except UNANSWERED:
+                self._written[name] = value
+                raise
+        self._written[name] = value
 
     @asynccontextmanager
     async def _ready_link(self) -> AsyncIterator[None]:
