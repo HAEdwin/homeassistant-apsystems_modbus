@@ -1402,27 +1402,6 @@ async def test_failed_finish_is_retried_at_the_next_poll(
     assert coordinator.power_limit.refreshing is False
 
 
-async def test_silent_ecu_below_100_refreshes_once_it_answers(
-    hass: HomeAssistant,
-    mock_ecu: MockModbusConnection,
-    mock_config_entry: MockConfigEntry,
-) -> None:
-    coordinator = await setup_entry(hass, mock_config_entry)
-    await set_limit(hass, 30)
-    writes = record_writes(mock_ecu.for_unit(1))
-
-    # A restart of the ECU breaks the connection for a while.
-    for unit_id in (1, 2):
-        mock_ecu.for_unit(unit_id).fail_requests(ModbusConnectionError("restart"))
-    await coordinator.async_refresh()
-    assert coordinator.data.available == set()
-    for unit_id in (1, 2):
-        mock_ecu.for_unit(unit_id).fail_requests(None)
-
-    await coordinator.async_refresh()
-    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
-
-
 async def test_quiet_evening_does_not_refresh(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
@@ -1677,10 +1656,14 @@ async def test_lost_connection_refreshes_at_most_once_an_hour(
         for unit_id in (1, 2):
             mock_ecu.for_unit(unit_id).fail_requests(None)
 
+    # A restart of the ECU breaks the connection for a while. Below 100 the
+    # limit is sent again once it answers.
     silent_ecu()
     await coordinator.async_refresh()
+    assert coordinator.data.available == set()
     ecu_back()
     await coordinator.async_refresh()
+    assert writes == [(EXPORT_LIMIT_ADDRESS, 290)]
     freezer.tick(STEP_HOLD)
     await coordinator.async_refresh()
     assert len(writes) == 2

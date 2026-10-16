@@ -675,6 +675,43 @@ async def test_lost_connection_keeps_what_was_read(
     assert coordinator.data.available == {1, 2}
 
 
+async def test_one_new_connection_per_poll(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    await setup_entry(hass, mock_config_entry)
+    coordinator = mock_config_entry.runtime_data
+    first, second = coordinator.inverters[1], coordinator.inverters[2]
+    poll_first, poll_second = first.async_poll, second.async_poll
+    lost: list[bool] = []
+    second_tries = 0
+
+    # The first request finds the connection dead, a new one works.
+    async def lose_once(*args: Any, **kwargs: Any) -> Any:
+        if not lost:
+            lost.append(True)
+            raise ModbusConnectionError("connection reset by peer")
+        return await poll_first(*args, **kwargs)
+
+    async def count(*args: Any, **kwargs: Any) -> Any:
+        nonlocal second_tries
+        second_tries += 1
+        return await poll_second(*args, **kwargs)
+
+    mock_ecu.for_unit(2).fail_requests(ModbusConnectionError("gone"))
+    with (
+        patch.object(first, "async_poll", lose_once),
+        patch.object(second, "async_poll", count),
+    ):
+        await coordinator.async_refresh()
+
+    # When it breaks again in the same poll, the poll ends there.
+    assert second_tries == 1
+    assert coordinator.data.link_lost is True
+    assert coordinator.data.available == {1}
+
+
 async def test_write_lock_lets_write_go_between_inverters(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,
