@@ -684,6 +684,31 @@ async def test_only_registers_that_differ_are_written(
     assert state_of(hass) == "100"
 
 
+async def test_debug_log_shows_what_is_written(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry)
+    caplog.set_level(logging.DEBUG, logger="custom_components.apsystems_modbus")
+
+    await set_limit(hass, 50)
+    await coordinator.async_refresh()
+    await set_limit(hass, 0)
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if "power limit register" in record.getMessage().lower()
+    ]
+    assert lines == [
+        "Writing power limit register 40189 = 50",
+        "Writing power limit register 40193 = 1",
+        "Writing power limit register 40189 = 0",
+        "Power limit register 40193 already holds 1, not written",
+    ]
+
+
 async def test_changes_between_polls_count_what_was_written(
     hass: HomeAssistant,
     mock_ecu: MockModbusConnection,

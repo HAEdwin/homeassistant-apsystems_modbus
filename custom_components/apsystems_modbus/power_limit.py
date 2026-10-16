@@ -67,7 +67,13 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_INSTALLATION_POWER, DOMAIN, MAX_INVERTER_POWER
-from .ecu import MAX_EXPORT_LIMIT, Inverter, Measurements
+from .ecu import (
+    EXPORT_LIMIT_ADDRESS,
+    EXPORT_LIMIT_ENABLED_ADDRESS,
+    MAX_EXPORT_LIMIT,
+    Inverter,
+    Measurements,
+)
 
 if TYPE_CHECKING:
     from .coordinator import EcuCoordinator, EcuData
@@ -189,7 +195,7 @@ class PowerLimit:
         self._refresh = _Refresh()
         self._last_written: datetime | None = None
         """When the chosen value last reached the ECU."""
-        self._written: dict[str, float | bool] = {}
+        self._written: dict[int, float | bool] = {}
         """Per register the value written since the last read of ``control``."""
         self._over_last_poll: set[int] = set()
         self._ecu_was_silent = False
@@ -320,13 +326,13 @@ class PowerLimit:
         """
         measurements = self.control.measurements
         await self._async_put(
-            "percent",
+            EXPORT_LIMIT_ADDRESS,
             percent,
             measurements.export_limit,
             self.control.async_set_export_limit,
         )
         await self._async_put(
-            "enabled",
+            EXPORT_LIMIT_ENABLED_ADDRESS,
             percent < NO_LIMIT,
             measurements.export_limit_enabled,
             self.control.async_set_export_limit_enabled,
@@ -338,7 +344,7 @@ class PowerLimit:
 
     async def _async_put(
         self,
-        name: str,
+        address: int,
         value: float | bool,
         reported: float | bool | None,
         write: Callable[[Any], Awaitable[None]],
@@ -350,15 +356,21 @@ class PowerLimit:
         given up on, may still have arrived, so it is not sent again before
         the next read.
         """
-        if self._written.get(name, reported) == value:
+        if self._written.get(address, reported) == value:
+            _LOGGER.debug(
+                "Power limit register %s already holds %s, not written",
+                address,
+                int(value),
+            )
             return
         async with self._ready_link():
+            _LOGGER.debug("Writing power limit register %s = %s", address, int(value))
             try:
                 await write(value)
             except UNANSWERED:
-                self._written[name] = value
+                self._written[address] = value
                 raise
-        self._written[name] = value
+        self._written[address] = value
 
     @asynccontextmanager
     async def _ready_link(self) -> AsyncIterator[None]:
