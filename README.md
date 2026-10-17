@@ -113,6 +113,7 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
 - With the installation power entered, a second control sets the same limit
   in kW. If an inverter then delivers clearly more than the limit allows, a
   notice under *Settings → Repairs* asks you to check the installation power.
+- If the ECU is not answering, a new limit is sent once it answers again.
 - If an inverter stays limited, set the limit to 100. If that does not help,
   switch the ECU off for a minute.
 
@@ -151,6 +152,8 @@ automation:
   resets it during the night.
 - When the ECU answers slowly, setting the power limit can take a minute or
   more.
+- The ECU sometimes stops answering for about half an hour, also to the EMA
+  app. It recovers by itself. Meanwhile the values show unavailable.
 - When the ECU skips an inverter, its last values stay for up to 15 minutes,
   also in the totals. After that it shows unavailable until the ECU answers
   again. The integration recovers by itself.
