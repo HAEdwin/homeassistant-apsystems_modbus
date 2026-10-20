@@ -29,7 +29,10 @@
     },
     "switch": {
       "inverter_output": {
-        "default": "mdi:solar-power"
+        "default": "mdi:solar-power",
+        "state": {
+          "off": "mdi:solar-power-variant-outline"
+        }
       }
     }
   }
