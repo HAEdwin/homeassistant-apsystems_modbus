@@ -109,6 +109,12 @@
     },
     "limit_maybe_active": {
       "message": "Die APsystems ECU konnte beim Entfernen der Integration nicht geprüft werden. Falls eine Leistungsbegrenzung eingestellt war, sind die Wechselrichter möglicherweise noch begrenzt. Füge die Integration erneut hinzu und stelle die Leistungsbegrenzung auf 100 %."
+    },
+    "inverter_output_pending": {
+      "message": "Die Wechselrichter konnten noch nicht ausgeschaltet werden, weil die ECU beschäftigt ist. Die Integration sendet den Befehl innerhalb von fünf Minuten erneut."
+    },
+    "output_maybe_off": {
+      "message": "Die APsystems ECU war beim Entfernen der Integration nicht erreichbar. Inverter output war ausgeschaltet. Eine ECU-R schaltet die Wechselrichter innerhalb von zehn Minuten von selbst wieder ein. Bleiben sie aus, schalte die ECU kurz aus und wieder ein."
     }
   },
   "entity": {

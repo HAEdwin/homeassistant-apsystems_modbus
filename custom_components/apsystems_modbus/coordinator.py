@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 import logging
@@ -30,9 +32,11 @@ from .const import (
     SETTLE_BASE,
     SETTLE_MAX,
     SETTLE_PER_INVERTER,
+    SLOW_POLL,
     VALUE_MAX_AGE,
 )
 from .ecu import REQUEST_TIMEOUT, Inverter
+from .inverter_output import InverterOutput, output_store_for
 from .lifetime import MAX_DAILY_WH, EnergyLedger, ecu_day
 from .power_limit import PowerLimit, store_for
 
@@ -140,6 +144,9 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
 
         Cleared when the link is opened fresh. A write waits until then.
         """
+        self.poll_healthy = False
+        """Whether the last cycle read every inverter in time and without an
+        unanswered request. Writes that can wait only go after such a cycle."""
         self.ecu_device_id: str | None = None
         """Device registry id of the ECU, set once the device is registered."""
         self.serials: dict[int, str] = {
@@ -157,6 +164,10 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
                 self.daily[unit_id] = (today, counter)
         self.power_limit = PowerLimit(self, lead, store_for(hass, entry.entry_id))
         """The ECU-wide power limit, written and read back through ``lead``."""
+        self.inverter_output = InverterOutput(
+            self, lead, output_store_for(hass, entry.entry_id)
+        )
+        """Turns the output of all inverters off and on, through ``lead``."""
         self._degraded = False
         """The ECU struggled in the last cycle: read mostly measurements."""
         self._silent = False
@@ -176,6 +187,19 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         self._last_change: datetime | None = None
 
     async def _async_update_data(self) -> EcuData:
+        self.poll_healthy = False
+        started = self.hass.loop.time()
+        data = await self._async_read_cycle()
+        self.poll_healthy = (
+            bool(data.available)
+            and not data.cut_short
+            and not data.ended_in_timeout
+            and self.hass.loop.time() - started <= SLOW_POLL
+        )
+        return data
+
+    # Reads the inverters in turn, within the budget, and finishes the cycle.
+    async def _async_read_cycle(self) -> EcuData:
         data = EcuData()
         started = monotonic()
         # A probe of the config flow on the same link may have lowered the
@@ -250,6 +274,22 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         # Inverters that went unanswered before do not make a cycle short.
         data.cut_short = any(unit not in self._stuck for unit in waiting)
         return await self._async_finish_cycle(data, limit_done=limit_done)
+
+    @asynccontextmanager
+    async def ready_link(self) -> AsyncIterator[None]:
+        """Hold ``write_lock`` for one write on a link that is not busy.
+
+        A write that goes unanswered leaves the link busy, like a read, so
+        the next poll starts on a fresh link and no write queues up behind it.
+        """
+        async with self.write_lock:
+            if self.link_busy:
+                raise ModbusTimeoutError("the ECU is busy with an earlier request")
+            try:
+                yield
+            except ModbusTimeoutError:
+                self.link_busy = True
+                raise
 
     async def _async_read(
         self, inverter: Inverter, names: tuple[str, ...]

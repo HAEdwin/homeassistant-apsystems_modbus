@@ -109,6 +109,12 @@
     },
     "limit_maybe_active": {
       "message": "De APsystems ECU kon niet worden gecontroleerd tijdens het verwijderen van de integratie. Als er een limiet stond, kunnen de omvormers nog begrensd zijn. Voeg de integratie opnieuw toe en zet de limiet op 100 %."
+    },
+    "inverter_output_pending": {
+      "message": "De omvormers konden nog niet worden uitgezet, omdat de ECU bezig is. De integratie stuurt de opdracht binnen vijf minuten opnieuw."
+    },
+    "output_maybe_off": {
+      "message": "De APsystems ECU was niet bereikbaar tijdens het verwijderen van de integratie. Inverter output stond uit. Een ECU-R zet de omvormers binnen tien minuten vanzelf weer aan. Blijven ze uit, zet de ECU dan even uit en weer aan."
     }
   },
   "entity": {

@@ -108,24 +108,36 @@ def mock_shared_connection(
 
 
 @pytest.fixture(autouse=True)
-def never_write_grid_connection(
+def only_conn_on_its_own(
     mock_modbus_connection: MockModbusConnection,
 ) -> Generator[None]:
-    """Fail the test if anything even attempts to write the grid connection register."""
-    attempts: list[tuple[int, int]] = []
+    """Fail the test on any write to the grid connection registers but one.
+
+    Only Conn itself may be written, as one register with function code 16
+    and the value 0 or 1. Its time window and revert time (40186, 40187) and
+    single-register writes (function code 6) never.
+    """
+    forbidden: list[tuple[int, int, tuple[int, ...]]] = []
+    conn_block = range(GRID_CONNECTION_ADDRESS - 2, GRID_CONNECTION_ADDRESS + 1)
 
     def guard(unit: MockModbusUnit) -> None:
         single = unit.write_register
         multiple = unit.write_registers
 
         async def write_register(address: int, value: int) -> None:
-            if address == GRID_CONNECTION_ADDRESS:
-                attempts.append((unit.unit_id, address))
+            if address in conn_block:
+                forbidden.append((unit.unit_id, address, (value,)))
             await single(address, value)
 
         async def write_registers(address: int, values: list[int]) -> None:
-            if address <= GRID_CONNECTION_ADDRESS < address + len(values):
-                attempts.append((unit.unit_id, address))
+            written = range(address, address + len(values))
+            allowed = (
+                address == GRID_CONNECTION_ADDRESS
+                and len(values) == 1
+                and values[0] in (0, 1)
+            )
+            if not allowed and set(written) & set(conn_block):
+                forbidden.append((unit.unit_id, address, tuple(values)))
             await multiple(address, values)
 
         unit.write_register = write_register  # type: ignore[method-assign]
@@ -134,7 +146,7 @@ def never_write_grid_connection(
     for unit_id in range(1, 17):
         guard(mock_modbus_connection.for_unit(unit_id))
     yield
-    assert attempts == [], f"register 40188 was written: {attempts}"
+    assert forbidden == [], f"grid connection registers written: {forbidden}"
 
 
 @pytest.fixture

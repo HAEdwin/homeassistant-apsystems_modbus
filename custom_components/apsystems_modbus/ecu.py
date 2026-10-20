@@ -68,7 +68,11 @@ CONTROLS_HEADER_ADDRESS = 40184
 EXPORT_LIMIT_ADDRESS = 40189
 EXPORT_LIMIT_ENABLED_ADDRESS = 40193
 GRID_CONNECTION_ADDRESS = 40188
-"""Read only. Writing 0 here disconnects every inverter from the grid."""
+"""Conn: 0 disconnects every inverter from the grid, 1 connects them again.
+
+Only ``InverterOutput`` writes it. An ECU-R reads back 1 whatever was written.
+The time window and revert time before it (40186, 40187) are never written.
+"""
 
 
 class OperatingState(IntEnum):
@@ -113,6 +117,13 @@ def _validate_export_limit(value: float) -> float:
     """Accept an export limit percentage between 0 and 100."""
     if not 0 <= value <= MAX_EXPORT_LIMIT:
         raise ValueError(f"export limit must be 0-{MAX_EXPORT_LIMIT} %, got {value}")
+    return value
+
+
+def _validate_grid_connection(value: int) -> int:
+    """Accept only 0 (disconnect) and 1 (connect) for Conn."""
+    if value not in (0, 1):
+        raise ValueError(f"grid connection must be 0 or 1, got {value}")
     return value
 
 
@@ -199,7 +210,13 @@ class Measurements(Component):
     energy_today = float32(40154, unit="Wh")
     temperature = float32(40162, unit="°C")
 
-    grid_connection = integer(GRID_CONNECTION_ADDRESS, signed=False, nan=0xFFFF)
+    grid_connection = integer(
+        GRID_CONNECTION_ADDRESS,
+        signed=False,
+        nan=0xFFFF,
+        writable=_validate_grid_connection,
+        force_fc16=True,
+    )
     # The ECU ignores "write single register" (function code 6) and only
     # accepts "write multiple registers" (16), even for one register.
     export_limit = gauge(
@@ -301,3 +318,7 @@ class Inverter(Device):
     async def async_set_export_limit_enabled(self, enabled: bool) -> None:
         """Switch the export limit on or off for all inverters."""
         await self.measurements.write("export_limit_enabled_raw", int(enabled))
+
+    async def async_set_grid_connection(self, connected: bool) -> None:
+        """Connect or disconnect all inverters; the ECU applies it to every one."""
+        await self.measurements.write("grid_connection", int(connected))

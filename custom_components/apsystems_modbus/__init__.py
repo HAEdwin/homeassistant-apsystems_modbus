@@ -18,6 +18,7 @@ from .const import CONF_INVERTERS, CONF_SERIAL_NUMBER, CONF_UNIT_ID, DOMAIN
 from .coordinator import ApsystemsConfigEntry, EcuCoordinator, new_address_issue_id
 from .ecu import Inverter
 from .entity import ecu_device_info, ecu_identifier
+from .inverter_output import output_store_for, stored_off
 from .lifetime import EnergyLedger
 from .power_limit import (
     NO_LIMIT,
@@ -29,7 +30,7 @@ from .power_limit import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SENSOR, Platform.SWITCH]
 RELEASE_ATTEMPTS = 2
 """Inverters tried on removal, so one silent inverter does not block it."""
 
@@ -65,6 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
     coordinator = EcuCoordinator(hass, entry, inverters, lead, ledger)
     entry.runtime_data = coordinator
     await coordinator.power_limit.async_load()
+    await coordinator.inverter_output.async_load()
     # Notices are checked afresh after a change or a reconfigure.
     ir.async_delete_issue(hass, DOMAIN, issue_id_for(entry.entry_id))
     ir.async_delete_issue(hass, DOMAIN, new_address_issue_id(entry.entry_id))
@@ -76,6 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) ->
     coordinator.ecu_device_id = ecu_device.id
     _remove_stale_devices(registry, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    coordinator.inverter_output.async_start(entry)
     entry.async_create_background_task(
         hass, coordinator.async_refresh(), f"{DOMAIN} first poll"
     )
@@ -102,10 +105,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
     if unloaded:
         await entry.runtime_data.ledger.async_save()
         await entry.runtime_data.power_limit.async_save()
+        await entry.runtime_data.inverter_output.async_save()
     return unloaded
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -> None:
+    """Undo what this integration set, so the inverters are not left off or limited."""
+    await _async_restore_output(hass, entry)
+    await _async_remove_limit(hass, entry)
+
+
+async def _async_remove_limit(hass: HomeAssistant, entry: ApsystemsConfigEntry) -> None:
     """Release a power limit this integration set, so the inverters are not left limited.
 
     Without a choice of its own the ECU is not contacted at all, so a limit
@@ -148,6 +158,54 @@ async def async_remove_entry(hass: HomeAssistant, entry: ApsystemsConfigEntry) -
         message,
         title="APsystems Modbus",
         notification_id=f"{DOMAIN}_power_limit_{entry.entry_id}",
+    )
+
+
+async def _async_restore_output(
+    hass: HomeAssistant, entry: ApsystemsConfigEntry
+) -> None:
+    """Turn the inverter output on again if this integration left it off.
+
+    An ECU-R turns the inverters on by itself once the off writes stop, but
+    other ECUs keep them off until told otherwise. Only written, never read:
+    the ECU-R reports the output as on whatever it does.
+    """
+    store = output_store_for(hass, entry.entry_id)
+    was_off = stored_off(await store.async_load())
+    await store.async_remove()
+    if not was_off:
+        return
+    params = ModbusTcpParams(host=entry.data[CONF_HOST], port=entry.data[CONF_PORT])
+    unit_ids = sorted(item[CONF_UNIT_ID] for item in entry.data[CONF_INVERTERS])
+    for unit_id in unit_ids[:RELEASE_ATTEMPTS]:
+        try:
+            async with async_get_temporary_unit(hass, params, unit_id) as unit:
+                await Inverter(unit, unit_id).async_set_grid_connection(True)
+        except ModbusTimeoutError:
+            continue
+        except (ModbusError, HomeAssistantError) as err:
+            _LOGGER.warning(
+                "Could not turn the inverter output on before removal (%s)",
+                type(err).__name__,
+            )
+            break
+        else:
+            _LOGGER.info("Turned the inverter output on before removing the ECU")
+            return
+    texts = await async_get_translations(
+        hass, hass.config.language, "exceptions", [DOMAIN]
+    )
+    message = texts.get(
+        f"component.{DOMAIN}.exceptions.output_maybe_off.message",
+        "The APsystems ECU could not be reached while the integration was "
+        "removed. Inverter output was off. An ECU-R turns the inverters on by "
+        "itself within ten minutes. If they stay off, turn the ECU off and on.",
+    )
+    persistent_notification.async_create(
+        hass,
+        message,
+        title="APsystems Modbus",
+        notification_id=f"{DOMAIN}_inverter_output_{entry.entry_id}",
     )
 
 

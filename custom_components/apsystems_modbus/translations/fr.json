@@ -109,6 +109,12 @@
     },
     "limit_maybe_active": {
       "message": "L'ECU APsystems n'a pas pu être vérifiée lors de la suppression de l'intégration. Si une limite de puissance était réglée, les onduleurs sont peut-être encore limités. Ajoutez à nouveau l'intégration et réglez la limite de puissance sur 100 %."
+    },
+    "inverter_output_pending": {
+      "message": "Les onduleurs n'ont pas encore pu être arrêtés, car l'ECU est occupée. L'intégration renvoie la commande dans les cinq minutes."
+    },
+    "output_maybe_off": {
+      "message": "L'ECU APsystems n'était pas joignable lors de la suppression de l'intégration. Inverter output était désactivé. Une ECU-R remet les onduleurs en marche d'elle-même en dix minutes. S'ils restent arrêtés, éteignez puis rallumez l'ECU."
     }
   },
   "entity": {

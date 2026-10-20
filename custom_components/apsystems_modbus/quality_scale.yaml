@@ -2,7 +2,7 @@ rules:
   # Bronze
   action-setup:
     status: exempt
-    comment: No custom actions; the power limit is a number entity set with number.set_value.
+    comment: No custom actions; the power limit is a number entity and the inverter output a switch.
   appropriate-polling: done
   brands:
     status: exempt
@@ -13,7 +13,7 @@ rules:
   dependency-transparency: done
   docs-actions:
     status: exempt
-    comment: No custom actions; the README documents the power limit number.
+    comment: No custom actions; the README documents the power limit number and the inverter output switch.
   docs-high-level-description: done
   docs-installation-instructions: done
   docs-removal-instructions: done
@@ -36,7 +36,7 @@ rules:
   docs-installation-parameters: done
   entity-unavailable:
     status: done
-    comment: Every entity follows the coordinator, except the power limit numbers. Those stay available on purpose, because Home Assistant skips actions on unavailable entities and a release must always be tried.
+    comment: Every entity follows the coordinator, except the power limit numbers and the inverter output switch. Those stay available on purpose, because Home Assistant skips actions on unavailable entities and a release or turning the output on must always be tried.
   integration-owner: done
   log-when-unavailable: done
   parallel-updates: done

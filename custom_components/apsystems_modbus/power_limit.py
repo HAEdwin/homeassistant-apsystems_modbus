@@ -374,19 +374,9 @@ class PowerLimit:
 
     @asynccontextmanager
     async def _ready_link(self) -> AsyncIterator[None]:
-        """Hold ``write_lock`` for one write on a link that is not busy.
-
-        A write that goes unanswered leaves the link busy, like a read.
-        """
-        coordinator = self._coordinator
-        async with coordinator.write_lock:
-            if coordinator.link_busy:
-                raise ModbusTimeoutError("the ECU is busy with an earlier request")
-            try:
-                yield
-            except ModbusTimeoutError:
-                coordinator.link_busy = True
-                raise
+        """Hold the coordinator's write turn for one register write."""
+        async with self._coordinator.ready_link():
+            yield
 
     async def async_after_poll(self, data: EcuData) -> None:
         """Update the shown value and make the ECU follow the chosen one.

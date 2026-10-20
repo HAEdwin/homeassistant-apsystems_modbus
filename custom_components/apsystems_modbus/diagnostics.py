@@ -51,7 +51,18 @@ async def async_get_config_entry_diagnostics(
             if data and data.last_change
             else None,
         },
-        "polling": {"settle_s": coordinator.settle},
+        "polling": {
+            "settle_s": coordinator.settle,
+            "poll_healthy": coordinator.poll_healthy,
+        },
+        "inverter_output": {
+            "enabled": coordinator.inverter_output.enabled,
+            "catch_up": coordinator.inverter_output.catch_up,
+            "last_write": coordinator.inverter_output.last_write.isoformat()
+            if coordinator.inverter_output.last_write
+            else None,
+            "last_result": coordinator.inverter_output.last_result,
+        },
         "power_limit": {
             "control_unit": coordinator.power_limit.control.unit_id,
             "desired": coordinator.power_limit.desired,

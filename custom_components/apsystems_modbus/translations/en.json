@@ -109,6 +109,12 @@
     },
     "limit_maybe_active": {
       "message": "The APsystems ECU could not be checked while the integration was removed. If a power limit was set, the inverters may still be limited. Add the integration again and set the power limit to 100 %."
+    },
+    "inverter_output_pending": {
+      "message": "The inverter output could not be switched off yet, because the ECU is busy. The integration sends the command again within five minutes."
+    },
+    "output_maybe_off": {
+      "message": "The APsystems ECU could not be reached while the integration was removed. Inverter output was off. An ECU-R turns the inverters on by itself within ten minutes. If they stay off, turn the ECU off and on."
     }
   },
   "entity": {
@@ -183,6 +189,11 @@
       },
       "power_limit_kw": {
         "name": "Power limit kW"
+      }
+    },
+    "switch": {
+      "inverter_output": {
+        "name": "Inverter output"
       }
     }
   },
