@@ -10,7 +10,7 @@
 Fully local Home Assistant integration for solar panels with APsystems
 microinverters and an ECU, over Modbus TCP.
 
-<img src="images/dashboard.png" alt="Dashboard with solar power, energy, power limit and every microinverter down to each panel">
+<img src="images/dashboard.png" alt="Dashboard with solar power, energy, inverter output, power limit and every microinverter down to each panel">
 
 Features:
 
@@ -119,7 +119,7 @@ whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
 - If an inverter stays limited, set the limit to 100. If that does not help,
   switch the ECU off for a minute.
 
-<img src="images/ecu.png" alt="ECU device with the power limit in percent and in kW" width="360">
+<img src="images/ecu.png" alt="ECU device with inverter output and the power limit in percent and in kW" width="360">
 
 Example: no export at negative feed-in prices. Replace the entity IDs with
 yours.
