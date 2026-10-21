@@ -12,6 +12,10 @@ Measured on an ECU-R (firmware 1.3.23) with DS3 inverters:
 * This ECU needs no 1 to turn them on again. Other ECUs keep 0 until 1 is
   written, so turning the output on writes 1 once.
 
+* Now and then one inverter starts anyway at a round. The poll right after
+  that round shows it delivering, so 0 is written again at once instead of
+  waiting for the next fifth minute.
+
 A write is skipped rather than queued while the ECU struggles: a late write
 lands after the round, where it does nothing but keep a busy ECU busy. After
 such a gap, and after a restart or the night, the output is turned off again
@@ -39,11 +43,11 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, MAX_INVERTER_POWER
 from .ecu import GRID_CONNECTION_ADDRESS, Inverter
 
 if TYPE_CHECKING:
-    from .coordinator import EcuCoordinator
+    from .coordinator import EcuCoordinator, EcuData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +55,8 @@ WRITE_LATE = timedelta(seconds=5)
 """A clock write later than this would land in or after the ECU round."""
 COVERED = timedelta(seconds=10)
 """A write this shortly before a clock write already covers that round."""
+LEAK_POWER = 10.0
+"""An inverter above this many W while off has started again; off ones read 0-3 W."""
 STORAGE_VERSION = 1
 
 
@@ -87,6 +93,8 @@ class InverterOutput:
         """An off write is due right after the next healthy poll."""
         self._lock = asyncio.Lock()
         self._unsub_clock: CALLBACK_TYPE | None = None
+        self._handled: EcuData | None = None
+        """The poll result already looked at; listeners also run without a poll."""
 
     async def async_load(self) -> None:
         """Take over the choice stored before Home Assistant (re)started."""
@@ -161,16 +169,47 @@ class InverterOutput:
 
     @callback
     def _after_poll(self) -> None:
-        """Send a due off write right after a healthy poll."""
-        if self.enabled or not self.catch_up or not self._coordinator.poll_healthy:
+        """Send off right after a healthy poll if it is due or an inverter delivers.
+
+        Setting the power limit or the options also calls the listeners. Only
+        a new poll result counts, so the same readings never write twice.
+        """
+        if self._coordinator.data is self._handled:
+            return
+        self._handled = self._coordinator.data
+        if self.enabled or not self._coordinator.poll_healthy:
             return
         if not sun.is_up(self._coordinator.hass):
             return
+        if not self.catch_up:
+            if not (delivering := self._delivering()):
+                return
+            _LOGGER.debug(
+                "Inverter output: units %s deliver while off, writing off again",
+                ", ".join(
+                    f"{unit_id} ({power:.0f} W)" for unit_id, power in delivering
+                ),
+            )
+            self.catch_up = True
         self._coordinator.config_entry.async_create_background_task(
             self._coordinator.hass,
             self._async_send_off(due=None),
             f"{DOMAIN} inverter output off",
         )
+
+    def _delivering(self) -> list[tuple[int, float]]:
+        """Return the inverters read in the last poll that deliver power.
+
+        Only called after a healthy poll, so there is data.
+        """
+        inverters = self._coordinator.inverters
+        return [
+            (unit_id, power)
+            for unit_id in sorted(self._coordinator.data.available)
+            if LEAK_POWER
+            < (power := inverters[unit_id].measurements.ac_power or 0.0)
+            <= MAX_INVERTER_POWER
+        ]
 
     async def _async_clock(self, now: datetime) -> None:
         """Send off just before an ECU round.

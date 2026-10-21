@@ -17,18 +17,17 @@ Features:
 - **One device for the whole system (the ECU)** with current solar power,
   energy today, lifetime energy for the Energy dashboard, highest power ever
   measured and inverters online.
-- **One device per microinverter** with its own power, energy today, voltage,
-  current, frequency, temperature, power per panel, status and event code.
+- **One device per microinverter** with power, energy today, AC voltage and
+  current, frequency, temperature, status and event code. Each panel gets its
+  own power, voltage and current.
 - **Control: power limit and inverter output.** Curtail the output of all
   inverters, in percent or in kW, or turn it off completely. By hand or from
   an automation. With a dynamic tariff you can stop at negative prices and go
-  back to full power when they recover.
+  back to full power when they are positive again.
 - **Setup**: the ECU is discovered on your network and the inverters are found
   automatically.
 
-Unofficial, not affiliated with APsystems. Use at your own risk. The power
-limit and the inverter output change what your inverters do, so read those
-sections first.
+Unofficial, not affiliated with APsystems. Use at your own risk.
 
 ## Supported hardware
 
@@ -100,33 +99,35 @@ Statistics*.
 
 ## Energy dashboard
 
-Add **Lifetime energy** of the ECU device as solar production under
-*Settings → Dashboards → Energy*.
+In the Energy dashboard, choose *Edit dashboard → Solar panels*. Pick
+**Lifetime energy** of the ECU device for *Solar production energy* and
+**Power** for *Solar production power*.
 
 ## Power limit
 
 **Power limit** on the ECU device curtails the output of all inverters, in
-whole percent. 100 is no limit. Set it by hand or with `number.set_value`.
+whole percent. 100 % is no limit.
 
 - Inverters follow a change within a few minutes, in tests up to about 15.
-- At 0 each inverter still delivers about 20 to 30 W.
-- The integration keeps the limit in place by itself. It works best with
-  the installation power entered under *Configure*.
+- At 0 % each inverter still delivers about 20 to 30 W.
+- If the ECU loses the limit, for example after a restart, the integration
+  sends it again. This works best with the installation power entered under
+  *Configure*.
 - With the installation power entered, a second control sets the same limit
   in kW. If an inverter then delivers clearly more than the limit allows, a
   notice under *Settings → Repairs* asks you to check the installation power.
 - If the ECU is not answering, a new limit is sent once it answers again.
-- If an inverter stays limited, set the limit to 100. If that does not help,
+- If an inverter stays limited, set the limit to 100 %. If that does not help,
   switch the ECU off for a minute.
 
 <img src="images/ecu.png" alt="ECU device with inverter output and the power limit in percent and in kW" width="360">
 
-Example: no export at negative feed-in prices. Replace the entity IDs with
-yours.
+Example: export as little as possible at negative feed-in prices. Replace the
+entity IDs with yours.
 
 ```yaml
 automation:
-  - alias: Solar panels and negative price
+  - alias: Solar panels limited at negative feed-in price
     triggers:
       - trigger: numeric_state
         entity_id: sensor.feed_in_price
@@ -146,45 +147,30 @@ automation:
 
 ## Inverter output
 
-**Inverter output** on the ECU device turns all inverters off at once. Turn it
-off to stop all solar production, for example when energy prices are
-negative. Turn it on to let them produce again. Use it by hand or with
-`switch.turn_off` and `switch.turn_on`.
+**Inverter output** on the ECU device turns all inverters off, for example
+when energy prices are negative.
 
-- The inverters stop within about a minute. After you turn the switch on they
-  start again within about six minutes. One inverter may take up to 20.
-- The ECU turns the inverters back on by itself at its next round. So while
-  the switch is off, the integration repeats the command every five minutes,
-  just before each round.
-- The switch shows your choice. The ECU cannot report whether the inverters
-  are off, so check Power.
-- The switch stays off until you turn it on, also after a restart of Home
-  Assistant. If Home Assistant stops, the inverters come back on by
-  themselves.
-- Nothing is sent at night. When the ECU answers slowly, the command waits
-  for the next good poll. Until then the inverters may deliver.
-- The power limit stays as it is. While the inverters are off, it decides how
-  much they deliver when a command does not get through, and at what level
-  they come back. Set the limit first, then turn the switch off.
-- Changing the power limit while the inverters are off can start one of them
-  until the next command, at most five minutes.
-- The ECU sometimes stops answering for about half an hour. The inverters then
-  come back on by themselves.
-- While the switch is off the ECU gets 12 commands per hour. An ECU-R always
-  reports this setting as on, so it seems not to be stored. This is not
-  certain.
-- Tested on an ECU-R 2160 (firmware 1.3.23) with DS3 inverters. Other ECUs may
-  keep the inverters off after you turn the switch on. Turn it off and on
-  again in that case.
-- **Inverters enabled** (disabled by default) shows what the ECU reports for
-  this setting. An ECU-R always reports on.
+- Off: the inverters stop within a minute. On: most produce again within a
+  few minutes, all within 15 to 20.
+- The ECU turns the inverters on again by itself every five minutes. So while
+  the switch is off, the integration repeats the command. An inverter that
+  starts anyway is turned off again at the next update.
+- The switch shows your choice, not what the inverters do. Check Power.
+- The switch stays off after a restart of Home Assistant. If Home Assistant
+  stops, the inverters come back on by themselves.
+- When the ECU answers slowly, the command waits. The inverters may then
+  deliver up to the power limit.
+- Tested on an ECU-R 2160 (firmware 1.3.23) with DS3 inverters. If another ECU
+  keeps the inverters off after you turn the switch on, turn it off and on
+  again.
 
 Example: stop all production at negative energy prices, also after a restart
-of Home Assistant. Replace the entity IDs with yours.
+of Home Assistant. It also sets the power limit to 0 %, so little gets through
+if a command fails. Replace the entity IDs with yours.
 
 ```yaml
 automation:
-  - alias: Solar panels and negative price
+  - alias: Solar panels off at negative energy price
     triggers:
       - trigger: numeric_state
         entity_id: sensor.energy_price
@@ -222,19 +208,16 @@ automation:
 
 ## Good to know
 
-- The ECU fetches new data from the inverters over Zigbee every 5 minutes.
-  The integration reads it right after that, so values in Home Assistant are
-  at most about a minute and a half old. Daily totals can differ about 1 %
-  from the EMA app.
+- The ECU fetches new data from the inverters over Zigbee every five minutes.
+  New values reach Home Assistant about a minute and a half after that. Daily
+  totals can differ about 1 % from the EMA app.
 - At night inverters read 0 V and 0 Hz. Energy today follows the ECU, which
   resets it during the night.
-- When the ECU answers slowly, setting the power limit or the inverter
-  output can take a minute or more.
 - The ECU sometimes stops answering for about half an hour, also to the EMA
   app. It recovers by itself. Meanwhile the values show unavailable.
-- When the ECU skips an inverter, its last values stay for up to 15 minutes,
-  also in the totals. After that it shows unavailable until the ECU answers
-  again. The integration recovers by itself.
+- When an inverter does not answer the ECU, the ECU has no new values for it.
+  The integration then keeps its last values for up to 15 minutes, also in the
+  totals. After that the inverter shows unavailable until it answers again.
 - A replaced inverter on the same address keeps counting under its existing
   device.
 
@@ -266,10 +249,11 @@ enable the integration again.
 
 ## Removing the integration
 
-Set the power limit to 100, turn Inverter output on and check that all
+Set the power limit to 100 %, turn Inverter output on and check that all
 inverters deliver power again. Then delete the integration under *Settings →
 Devices & services*. If you forget, the integration tries to do both when it
 is removed.
+
 The lifetime total is kept, so it continues when you add the same ECU again.
 
 ## Support the project
@@ -281,4 +265,4 @@ If this integration is useful to you:
 
 ## License
 
-Apache-2.0. Unofficial and not affiliated with APsystems.
+Apache-2.0.

@@ -142,7 +142,7 @@ class EcuCoordinator(DataUpdateCoordinator[EcuData]):
         self.link_busy = False
         """The last request went unanswered, so the ECU may still work on it.
 
-        Cleared when the link is opened fresh. A write waits until then.
+        Cleared when the link is opened fresh. Until then a write is refused.
         """
         self.poll_healthy = False
         """Whether the last cycle read every inverter in time and without an

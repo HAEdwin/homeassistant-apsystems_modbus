@@ -14,6 +14,11 @@ from modbus_connection.mock import MockModbusConnection, WriteEvent
 import pytest
 
 from homeassistant.components import persistent_notification
+from homeassistant.components.number import (
+    ATTR_VALUE,
+    DOMAIN as NUMBER_DOMAIN,
+    SERVICE_SET_VALUE,
+)
 from homeassistant.components.switch import (
     DOMAIN as SWITCH_DOMAIN,
     SERVICE_TURN_OFF,
@@ -34,7 +39,10 @@ from custom_components.apsystems_modbus.ecu import (
     GRID_CONNECTION_ADDRESS,
 )
 
+from .conftest import set_float32
+
 ENTITY = "switch.apsystems_ecu_inverter_output"
+AC_POWER = 40144
 START = datetime(2026, 10, 20, 11, 1, 30, tzinfo=dt_util.UTC)
 """Just after a poll, between two ECU rounds."""
 
@@ -70,6 +78,12 @@ def conn_writes(mock_ecu: MockModbusConnection, unit_id: int = 1) -> list[int]:
 
     mock_ecu.for_unit(unit_id).on_write(take)
     return values
+
+
+def set_power(mock_ecu: MockModbusConnection, watts: dict[int, float]) -> None:
+    """Make inverters report an AC power, per unit id."""
+    for unit_id, value in watts.items():
+        set_float32(mock_ecu.for_unit(unit_id), AC_POWER, value)
 
 
 async def switch(hass: HomeAssistant, service: str) -> None:
@@ -113,6 +127,7 @@ async def test_off_writes_at_once_and_before_every_round(
     await switch(hass, SERVICE_TURN_OFF)
     assert hass.states.get(ENTITY).state == STATE_OFF
     assert writes == [0]
+    set_power(mock_ecu, {1: 0.0, 2: 0.0})
 
     await at(hass, freezer, "11:05:00")
     await at(hass, freezer, "11:07:30")
@@ -451,3 +466,191 @@ async def test_quick_off_and_on_ends_on(
 
     assert output.enabled
     assert writes == [0, 1]
+
+
+async def off_and_quiet(
+    hass: HomeAssistant, mock_ecu: MockModbusConnection
+) -> list[int]:
+    """Turn the output off; the inverters follow. Return the later writes."""
+    await switch(hass, SERVICE_TURN_OFF)
+    set_power(mock_ecu, {1: 0.0, 2: 0.0})
+    return conn_writes(mock_ecu)
+
+
+async def poll(hass: HomeAssistant, coordinator: EcuCoordinator) -> None:
+    await coordinator.async_refresh()
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def test_inverter_that_starts_while_off_is_turned_off_after_the_poll(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+    caplog.set_level(
+        logging.DEBUG, logger="custom_components.apsystems_modbus.inverter_output"
+    )
+
+    await poll(hass, coordinator)
+    assert writes == []
+
+    # The ECU round started unit 2 again.
+    set_power(mock_ecu, {2: 26.0})
+    await poll(hass, coordinator)
+    assert writes == [0]
+    assert not coordinator.inverter_output.catch_up
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.endswith(".inverter_output")
+    ]
+    assert any("units 2 (26 W) deliver while off" in line for line in lines)
+    assert not any("703000000002" in line for line in lines)
+
+
+async def test_off_inverters_reading_a_few_watts_need_no_write(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+
+    set_power(mock_ecu, {1: 3.0, 2: 10.0})
+    await poll(hass, coordinator)
+    assert writes == []
+
+
+async def test_power_while_on_writes_nothing(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = conn_writes(mock_ecu)
+
+    await poll(hass, coordinator)  # The capture reports 204 W.
+    assert writes == []
+
+
+async def test_power_after_a_slow_poll_waits_for_the_clock(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+
+    set_power(mock_ecu, {2: 26.0})
+    with patch("custom_components.apsystems_modbus.coordinator.SLOW_POLL", -1):
+        await poll(hass, coordinator)
+    assert not coordinator.poll_healthy
+    assert writes == []
+
+
+async def test_power_at_night_writes_nothing(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+    daylight: MagicMock,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+    daylight.return_value = False
+
+    set_power(mock_ecu, {2: 26.0})
+    await poll(hass, coordinator)
+    assert writes == []
+
+
+async def test_only_inverters_read_in_the_last_poll_count(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    await off_and_quiet(hass, mock_ecu)
+    set_power(mock_ecu, {2: 26.0})
+    await poll(hass, coordinator)
+
+    coordinator.data.available = {1}
+    assert coordinator.inverter_output._delivering() == []
+    coordinator.data.available = {1, 2}
+    assert coordinator.inverter_output._delivering() == [(2, 26.0)]
+
+
+async def test_due_write_and_power_give_one_write(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+    coordinator.inverter_output.catch_up = True
+
+    set_power(mock_ecu, {1: 40.0, 2: 26.0})
+    await poll(hass, coordinator)
+    assert writes == [0]
+
+
+async def test_lasting_power_gives_at_most_one_write_per_poll(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+
+    set_power(mock_ecu, {2: 26.0})
+    await poll(hass, coordinator)
+    await poll(hass, coordinator)
+    assert writes == [0, 0]
+
+
+async def test_setting_the_limit_does_not_reuse_the_last_poll(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+    set_power(mock_ecu, {2: 26.0})
+    await poll(hass, coordinator)
+    assert writes == [0]
+
+    # Setting the limit updates the listeners too, without a new poll.
+    for value in (50, 0, 100):
+        await hass.services.async_call(
+            NUMBER_DOMAIN,
+            SERVICE_SET_VALUE,
+            {ATTR_ENTITY_ID: "number.apsystems_ecu_power_limit", ATTR_VALUE: value},
+            blocking=True,
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert writes == [0]
+
+
+async def test_impossible_power_is_no_leak(
+    hass: HomeAssistant,
+    mock_ecu: MockModbusConnection,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    coordinator = await setup_entry(hass, mock_config_entry, freezer)
+    writes = await off_and_quiet(hass, mock_ecu)
+
+    set_power(mock_ecu, {2: 65000.0})
+    await poll(hass, coordinator)
+    assert writes == []
